@@ -52,8 +52,31 @@ invisible ped in the prop plane the player was last in to keep the engine idling
 #### **-** _Expanded animation handling_
 #### **-** _Additional realism options_
 
+### [ Development Notes ]
+This mod was built with a strong focus on:
 
+Native-level compatibility
 
-## [ Changelog ]
+Realism-oriented behavior
+
+Modular, configurable design
+
+Stability across GTA updates
+
+All logic, persistence systems, and engine handling were custom-developed specifically for EngineStateManager.
+
+# [ Changelog ]
 ### Version 1.0.0
 Initial Release
+
+
+
+## **[ Credits & Acknowledgements ]**
+#### **-** Alexander Blade — for ScriptHookV
+#### **-** crosire — for ScriptHookVDotNet
+#### **-** Chiheb-Bacha — for ScriptHookVDotNet Enhanced
+#### **-** Without their foundational tools, this mod would not be possible.
+
+#### **Additional thanks to:**
+#### **-** The GTA V modding community for documentation, shared research, and reverse-engineering efforts
+#### **-** Everyone who reports bugs or provides feedback — your input directly improves future updates
