@@ -19,7 +19,6 @@ namespace EngineStateManager
             if (!_enabled)
                 return;
 
-            // Create a stable, readable session id (timestamp + short guid)
             SessionId = $"{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("N").Substring(0, 8)}";
 
             if (!TryInitPath(preferredPath) && !TryInitPath(fallbackPath))
@@ -56,7 +55,6 @@ namespace EngineStateManager
         }
 
 
-        // Throttle repeated log lines by key to avoid spamming thousands of lines per second.
         private static readonly object _throttleLock = new object();
         private static readonly System.Collections.Generic.Dictionary<string, int> _lastLogTickByKey =
             new System.Collections.Generic.Dictionary<string, int>();

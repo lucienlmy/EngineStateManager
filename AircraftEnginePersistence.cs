@@ -128,12 +128,10 @@ namespace EngineStateManager
 
             // =========================================================
             // ENTRY PREEMPT (Planes only)
-            // Goal: If the player is ENTERING a running plane, keep flags asserted
-            // without ever cold-starting.
             // =========================================================
             if (_enablePlanePersistence && !ped.IsInVehicle())
             {
-                // Prefer TRYING_TO_ENTER (more reliable early) then fall back to IS_ENTERING.
+                // Prefer TRYING_TO_ENTER 
                 int enteringHandle = 0;
                 try { enteringHandle = NativeCompat.GetVehiclePedIsTryingToEnter(ped.Handle); }
                 catch { enteringHandle = 0; }
@@ -191,9 +189,6 @@ namespace EngineStateManager
         
             // =========================================================
             // GHOST PILOT ENTER DETECTION (Prop planes)
-            // Some GTA states don't report GET_VEHICLE_PED_IS_ENTERING reliably.
-            // If the player is getting into ANY vehicle and is near a tracked prop plane with a ghost pilot,
-            // delete the ghost immediately to avoid the player ejecting an invisible driver.
             // =========================================================
             if (_enablePlanePersistence && !ped.IsInVehicle())
             {
@@ -487,7 +482,7 @@ namespace EngineStateManager
                 {
                     continue;
                 }
-    // If not in grace and not post-exit armed, do nothing.
+                // If not in grace and not post-exit armed, do nothing.
                 if (!inAnyGrace && !t.HasExited)
                     continue;
 
@@ -587,8 +582,6 @@ namespace EngineStateManager
         // If player is back inside, never keep the ghost around.
         Ped player = Game.Player?.Character;
 
-        // If the player is currently entering ANY vehicle and is close to this plane, delete the ghost now.
-        // This catches cases where GET_VEHICLE_PED_IS_ENTERING returns 0 but the enter task is active.
         if (player != null && player.Exists() && !player.IsInVehicle() && NativeCompat.IsPedGettingIntoAnyVehicle(player.Handle))
         {
             int trying = 0;
@@ -682,7 +675,7 @@ namespace EngineStateManager
             ModLogger.InfoThrottled("ghost_cleanup_" + (t.Handle != 0 ? t.Handle : 0), $"Ghost pilot cleanup. Reason={reason}", 2000);
     }
 
-    // =========================================================
+        // =========================================================
         // Helpers
         // =========================================================
 
@@ -735,10 +728,6 @@ namespace EngineStateManager
             }
         }
 
-        /// <summary>
-        /// Holds RPM above a floor and never decreases RPM here (prevents perceived dip).
-        /// Also never "cold starts" because it only touches RPM when a vehicle exists.
-        /// </summary>
         private static void SafeForceRpmFloor(Vehicle v, TrackedAircraft t, float floor)
         {
             if (v == null || !v.Exists() || t == null)

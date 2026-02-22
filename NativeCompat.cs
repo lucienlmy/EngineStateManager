@@ -9,23 +9,18 @@ namespace EngineStateManager
     {
         private const ulong DOES_ENTITY_EXIST_HASH = 0x7239B21A38F536BAUL;
 
-        // VEHICLE::SET_VEHICLE_KEEP_ENGINE_ON
         private const ulong SET_VEHICLE_KEEP_ENGINE_ON_HASH = 0xB8FBC8B1330CA9B4UL;
 
-        // VEHICLE::IS_VEHICLE_ENGINE_ON
+        private const ulong SET_VEHICLE_ENGINE_ON_HASH = 0x2497C4717C8B881EUL;
+
         private const ulong IS_VEHICLE_ENGINE_ON_HASH = 0xAE31E7DF9B5B132EUL;
 
-        // VEHICLE::SET_VEHICLE_ENGINE_POWER_MULTIPLIER
         private const ulong SET_VEHICLE_ENGINE_POWER_MULTIPLIER_HASH = 0x93A3996368C94158UL;
 
-        // VEHICLE::SET_HELI_BLADES_FULL_SPEED
         private const ulong SET_HELI_BLADES_FULL_SPEED_HASH = 0xA178472EBB8AE60DUL;
 
-        // VEHICLE::SET_VEHICLE_JET_ENGINE_ON
         private const ulong SET_VEHICLE_JET_ENGINE_ON_HASH = 0x1549BA7FE83A2383UL;
 
-
-        // PED::GET_VEHICLE_PED_IS_TRYING_TO_ENTER
         private const ulong GET_VEHICLE_PED_IS_TRYING_TO_ENTER_HASH = 0x814FA8BE5449445DUL;
 
         // Log each failing native only once to avoid spam.
@@ -38,7 +33,7 @@ namespace EngineStateManager
 
             _failedNativeHashes.Add(hash);
 
-            // Keep the log message very explicit so users can report it.
+            // Keep the log message very explicit
             try
             {
                 if (ModLogger.Enabled)
@@ -84,6 +79,42 @@ namespace EngineStateManager
                 // Fail soft.
             }
         }
+
+        internal static void SetVehicleEngineOn(int vehicleHandle, bool on, bool instantly, bool disableAutoStart)
+        {
+            if (!DoesEntityExist(vehicleHandle)) return;
+
+            SafeCallVoid(
+                nameof(SetVehicleEngineOn),
+                SET_VEHICLE_ENGINE_ON_HASH,
+                () => Function.Call((Hash)SET_VEHICLE_ENGINE_ON_HASH, vehicleHandle, on, instantly, disableAutoStart)
+            );
+        }
+
+        internal static void ForceVehicleEngineOff_NoAutoStart(int vehicleHandle)
+        {
+            SetVehicleEngineOn(vehicleHandle, on: false, instantly: true, disableAutoStart: true);
+        }
+
+        internal static void ForceVehicleEngineOn(int vehicleHandle)
+        {
+            SetVehicleEngineOn(vehicleHandle, on: true, instantly: true, disableAutoStart: false);
+        }
+
+        private static void SafeCallVoid(string apiName, ulong hash, Action action)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                LogNativeFailureOnce(apiName, hash, ex);
+                // Fail soft.
+            }
+        }
+
+
 
         internal static bool IsVehicleEngineOn(int vehicleHandle)
         {
@@ -151,7 +182,6 @@ namespace EngineStateManager
             try
             {
                 // IS_PED_GETTING_OUT_OF_VEHICLE
-                // Hash: 0xC7E7181C09F33B69
 
                 return Function.Call<bool>((Hash)0xC7E7181C09F33B69, pedHandle);
             }
