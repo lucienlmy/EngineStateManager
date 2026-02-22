@@ -75,7 +75,7 @@ Initial Release
 #### **-** Alexander Blade — for ScriptHookV
 #### **-** crosire — for ScriptHookVDotNet
 #### **-** Chiheb-Bacha — for ScriptHookVDotNet Enhanced
-#### **-** Without their foundational tools, this mod would not be possible.
+#### Without their foundational tools, this mod would not be possible.
 
 #### **Additional thanks to:**
 #### **-** The GTA V modding community for documentation, shared research, and reverse-engineering efforts
