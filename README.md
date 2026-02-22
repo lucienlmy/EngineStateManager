@@ -43,6 +43,7 @@ Jet planes don't idle at they're idle speed when exiting them.**
 **Nativily prop planes are impossible to keep running when exiting them (unless a prop plane rotor hash exists but has been hidden by rockstar), so I've decided to do a temporary work around by spawning an
 invisible ped in the prop plane the player was last in to keep the engine idling.**
 #### **These are the main reasons that the EnablePlanePersistence ini option is false by default.**
+#### **If you encounter issues, please include your EngineStateManager.log when reporting.**
 
 ### **[ Planned Upcoming Features ]**
 #### **-** _Per-vehicle persistence profiles_
