@@ -80,3 +80,11 @@ Initial Release
 #### **Additional thanks to:**
 #### **-** The GTA V modding community for documentation, shared research, and reverse-engineering efforts
 #### **-** Everyone who reports bugs or provides feedback — your input directly improves future updates
+
+
+### [ Mod Mirrors ]
+  [**GTA5-Mods**](https://www.gta5-mods.com/tools/script-hook-v-net-enhanced)
+  
+  [NexusMods Enhanced](https://www.nexusmods.com/gta5enhanced/mods/443)
+  
+  [NexusMods Legacy](https://www.nexusmods.com/gta5/mods/1656)
