@@ -51,6 +51,8 @@ invisible ped in the prop plane the player was last in to keep the engine idling
 #### **-** _Advanced idle RPM control_
 #### **-** _Expanded animation handling_
 #### **-** _Additional realism options_
+#### **-** _Controller Support_
+#### **-** _Configurable engine options that are only present in online_
 
 ### [ Development Notes ]
 This mod was built with a strong focus on:
