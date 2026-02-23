@@ -17,12 +17,21 @@ public sealed class EngineStateControl : Script
     // INI
     private static bool _enabled = true;
     private static bool _animationsEnabled = true;
-    private static Keys _toggleKey = Keys.N;
+    private static Keys _toggleKey = Keys.Z;
 
     private EngineOverrideState _override = EngineOverrideState.None;
     private int _targetVehicleHandle = 0;
 
     private int _blockRestartUntilGameTime = 0;
+
+
+
+    // Input reliability / debounce
+    private bool _keyWasDown = false;
+    private int _lastToggleGameTime = 0;
+
+    // Safety: if Tick throws, log once and stop processing to avoid a "script running but dead" state.
+    private bool _tickFaulted = false;
 
     // Animation
     private const string AnimDict = "veh@std@ds@base";
@@ -37,7 +46,7 @@ public sealed class EngineStateControl : Script
         LoadIni();
 
         Tick += OnTick;
-        KeyUp += OnKeyUp;
+        KeyDown += OnKeyDown;
 
         Interval = 0;
 
@@ -51,31 +60,60 @@ public sealed class EngineStateControl : Script
         _enabled = _ini.GetValue("EngineToggleKeys", "ENABLED", true);
         _animationsEnabled = _ini.GetValue("EngineToggleKeys", "ANIMATIONS", true);
 
-        string keyString = _ini.GetValue("EngineToggleKeys", "MAIN", "N");
+        string keyString = _ini.GetValue("EngineToggleKeys", "MAIN", "Z");
         if (!Enum.TryParse(keyString, true, out Keys parsed))
-            parsed = Keys.N;
+            parsed = Keys.Z;
 
         _toggleKey = parsed;
     }
 
     private void OnTick(object sender, EventArgs e)
     {
-        if (!_enabled)
-        {
-            if (_override != EngineOverrideState.None || _targetVehicleHandle != 0)
-                ClearOverride("Feature disabled by INI.");
-
-            _pendingAnim = false;
+        if (_tickFaulted)
             return;
+
+        try
+        {
+            if (!_enabled)
+            {
+                if (_override != EngineOverrideState.None || _targetVehicleHandle != 0)
+                    ClearOverride("Feature disabled by INI.");
+
+                _pendingAnim = false;
+                _keyWasDown = false;
+                return;
+            }
+
+            // Fallback input path: some setups intermittently don't deliver KeyDown/KeyUp events on load.
+            // Poll the key here with edge detection so the feature always works.
+            bool down = Game.IsKeyPressed(_toggleKey);
+            if (down && !_keyWasDown)
+            {
+                // Debounce in case the key press is detected twice across input paths.
+                if (Game.GameTime - _lastToggleGameTime > 150)
+                {
+                    if (!IsBlockedByUI())
+                    {
+                        _lastToggleGameTime = Game.GameTime;
+                        ToggleForCurrentVehicle();
+                    }
+                }
+            }
+            _keyWasDown = down;
+
+            if (_animationsEnabled)
+                ProcessPendingAnim();
+
+            EnforceOverrideIfNeeded();
         }
-
-        if (_animationsEnabled)
-            ProcessPendingAnim();
-
-        EnforceOverrideIfNeeded();
+        catch (Exception ex)
+        {
+            _tickFaulted = true;
+            try { LogInfo("FATAL: EngineStateControl Tick exception; disabling script loop. " + ex); } catch { }
+        }
     }
 
-    private void OnKeyUp(object sender, KeyEventArgs e)
+    private void OnKeyDown(object sender, KeyEventArgs e)
     {
         if (!_enabled)
             return;
@@ -86,6 +124,11 @@ public sealed class EngineStateControl : Script
         if (IsBlockedByUI())
             return;
 
+        // Debounce and prevent double-trigger with Tick polling.
+        if (Game.GameTime - _lastToggleGameTime <= 150)
+            return;
+
+        _lastToggleGameTime = Game.GameTime;
         ToggleForCurrentVehicle();
     }
 

@@ -93,7 +93,6 @@ namespace EngineStateManager
 
                 _lastVehicleEngineOn = NativeCompat.IsVehicleEngineOn(_lastVehicleHandle);
                 if (_lastVehicleEngineOn) _lastEngineOnGameTime = Game.GameTime;
-                if (_lastVehicleEngineOn) _lastEngineOnGameTime = Game.GameTime;
             }
 
             if (_disableAutoStart)
@@ -158,6 +157,14 @@ namespace EngineStateManager
 
             if (_entryVehicleHandle == 0 || !NativeCompat.DoesEntityExist(_entryVehicleHandle))
             {
+                _entryArmed = false;
+                _entryVehicleHandle = 0;
+                return;
+            }
+
+            if (NativeCompat.IsVehicleEngineOn(_entryVehicleHandle))
+            {
+                ModLogger.Info("[EntryGuard] Vehicle engine already running — canceling DisableAutoStart enforcement.");
                 _entryArmed = false;
                 _entryVehicleHandle = 0;
                 return;
@@ -282,7 +289,6 @@ namespace EngineStateManager
 
             int h = currentVeh.Handle;
 
-            // If we changed vehicles, clear old flag first.
             if (_keepEngineOnVehicleHandle != 0 && _keepEngineOnVehicleHandle != h && NativeCompat.DoesEntityExist(_keepEngineOnVehicleHandle))
             {
                 NativeCompat.SetVehicleKeepEngineOn(_keepEngineOnVehicleHandle, false);
