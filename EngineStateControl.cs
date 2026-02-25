@@ -83,9 +83,6 @@ public sealed class EngineStateControl : Script
                 _keyWasDown = false;
                 return;
             }
-
-            // Fallback input path: some setups intermittently don't deliver KeyDown/KeyUp events on load.
-            // Poll the key here with edge detection so the feature always works.
             bool down = Game.IsKeyPressed(_toggleKey);
             if (down && !_keyWasDown)
             {
@@ -302,4 +299,5 @@ public sealed class EngineStateControl : Script
         }
         catch { }
     }
+
 }
