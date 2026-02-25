@@ -67,11 +67,6 @@ Stability across GTA updates
 
 All logic, persistence systems, and engine handling were custom-developed specifically for EngineStateManager.
 
-# [ Changelog ]
-### Version 1.0.0
-Initial Release
-
-
 
 ## **[ Credits & Acknowledgements ]**
 #### **-** Alexander Blade — for ScriptHookV
