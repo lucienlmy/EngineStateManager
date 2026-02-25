@@ -13,14 +13,11 @@ namespace EngineStateManager
             public int Handle;
             public VehicleClass ClassType;
 
-            // Cached classification (computed via bone scan)
             public bool IsPropPlane;
 
-            // Prop-plane workaround: invisible 'ghost pilot' to prevent Rockstar empty-seat prop stall
             public int GhostPilotPedHandle;
             public bool GhostPilotActive;
 
-            // "Sacred" guard: only true if we observed engine ON while player was seated.
             public bool ArmedForPersistence;
             public bool EngineWasOnWhileSeated;
 
@@ -30,11 +27,10 @@ namespace EngineStateManager
 
             // Timing
             public int NextReassertTime;
-            public int ExitGraceUntilTime;       // post-exit enforcement window
-            public int ExitPreemptUntilTime;     // while still in exit animation / transition
-            public int EnterPreemptUntilTime;    // while entering animation / transition
+            public int ExitGraceUntilTime;       
+            public int ExitPreemptUntilTime;    
+            public int EnterPreemptUntilTime;    
 
-            // Prevent respawning ghost pilot during player enter animation / nearby enter attempts
             public int GhostSuppressUntilTime;
             public int ExitDetectedTime;
 
@@ -47,9 +43,9 @@ namespace EngineStateManager
 
         // ===== INI / SETTINGS =====
         private int _maxTrackedAircraft = 20;
-        private int _maintenanceIntervalMs = 250;      // pruning/maintenance cadence
-        private int _reassertPerAircraftMs = 900;      // baseline reassert interval (outside grace)
-        private float _maxDistanceToTrack = -1f;       // <0 disables
+        private int _maintenanceIntervalMs = 250;      
+        private int _reassertPerAircraftMs = 900;      
+        private float _maxDistanceToTrack = -1f;      
 
         private bool _onlyReassertWhenEngineOff = true;
         private bool _forceHeliBladesFullSpeedAfterExit = true;
@@ -68,7 +64,6 @@ namespace EngineStateManager
         private float _jetRpmFloorDuringTransitions = 0.25f;
         private float _propRpmFloorDuringTransitions = 0.25f;
 
-        // Applied AFTER exit (never during entry/exit animation)
         private float _jetIdleRpm = 0.10f;
 
         private bool _enableDebugLogging = false;
@@ -155,7 +150,6 @@ namespace EngineStateManager
                             TrackedAircraft t = GetOrCreateTracked(enteringHandle, now);
                             t.ClassType = VehicleClass.Planes;
 
-                            // If we previously spawned a ghost pilot for this prop plane, remove it now so the player doesn't 'eject' an invisible driver on entry.
                             if (t.GhostPilotPedHandle != 0)
                                 CleanupGhostPilot(t, "PlayerEntering");
                             t.LastTouchedTime = now;
@@ -167,7 +161,6 @@ namespace EngineStateManager
 
                             NativeCompat.SetVehicleKeepEngineOn(enteringHandle, true);
 
-                            // Jet helper is safe to keep asserted for jets only.
                             if (!isPropPlane)
                             {
                                 NativeCompat.SetVehicleJetEngineOn(enteringHandle, true);
@@ -195,7 +188,6 @@ namespace EngineStateManager
                 bool isGettingIn = NativeCompat.IsPedGettingIntoAnyVehicle(ped.Handle);
                 if (isGettingIn)
                 {
-                    // Deterministic target: the vehicle the ped is TRYING to enter (more reliable than nearest-vehicle heuristics).
                     int tryingHandle = 0;
                     try { tryingHandle = NativeCompat.GetVehiclePedIsTryingToEnter(ped.Handle); }
                     catch { tryingHandle = 0; }
@@ -206,7 +198,7 @@ namespace EngineStateManager
                         tt.GhostSuppressUntilTime = now + 2500;
                         if (ModLogger.Enabled)
                             ModLogger.InfoThrottled("ghost_enterkill_" + tt.Handle, $"GhostPilot pre-delete for {tt.Handle} because player is trying to enter it.", 500);
-                        // Skip nearest scan; we already handled the actual target.
+                        // Skip nearest scan
                     }
                     else
                     {
@@ -247,7 +239,6 @@ namespace EngineStateManager
                 }
             }
 
-            // Current player vehicle (if any)
             int currentVehicleHandle = 0;
             Vehicle currentVehicle = null;
 
@@ -276,7 +267,6 @@ namespace EngineStateManager
                         t.LastTouchedTime = now;
                         t.WasPlayerInsideLastUpdate = true;
 
-                        // If back inside, clear post-exit state.
                         t.HasExited = false;
                         t.ExitGraceUntilTime = 0;
                         t.ExitPreemptUntilTime = 0;
@@ -288,14 +278,12 @@ namespace EngineStateManager
                         if (isPlane) t.IsPropPlane = isPropPlane;
                         bool isJet = isPlane && !isPropPlane;
 
-                        // If engine appears off during enter preempt for jets, gently suppress.
                         if (isJet && !engineOnNow && now < t.EnterPreemptUntilTime)
                         {
                             NativeCompat.SetVehicleKeepEngineOn(currentVehicleHandle, true);
                             NativeCompat.SetVehicleJetEngineOn(currentVehicleHandle, true);
                             NativeCompat.SetVehicleEnginePowerMultiplier(currentVehicleHandle, 0.0f);
 
-                            // Only hard-toggle if truly off
                             if (!NativeCompat.IsVehicleEngineOn(currentVehicleHandle))
                                 Function.Call(Hash.SET_VEHICLE_ENGINE_ON, currentVehicleHandle, true, true, false);
 
@@ -304,11 +292,9 @@ namespace EngineStateManager
                             if (ModLogger.Enabled)
                                 ModLogger.InfoThrottled("entrydip_" + currentVehicleHandle, $"Entry dip suppressed for {currentVehicleHandle} (Jets).", 1000);
 
-                            // Do NOT arm persistence from this transient; only arm when we see engine ON normally.
                         }
                         else if (!engineOnNow)
                         {
-                            // Cold while seated: sacred. Never arm, clear sticky state.
                             t.EngineWasOnWhileSeated = false;
                             t.ArmedForPersistence = false;
 
@@ -323,17 +309,14 @@ namespace EngineStateManager
                         }
                         else
                         {
-                            // Engine ON while seated => arm persistence.
                             t.EngineWasOnWhileSeated = true;
                             t.ArmedForPersistence = true;
 
                             NativeCompat.SetVehicleKeepEngineOn(currentVehicleHandle, true);
                             if (isJet) NativeCompat.SetVehicleJetEngineOn(currentVehicleHandle, true);
 
-                            // Sample last-known RPM while seated for smoothing.
                             t.LastKnownRpm = SafeGetRpm(currentVehicle, t.LastKnownRpm);
-
-                            // EXIT PREEMPT (Planes only, driver seat)
+                            
                             if (isPlane && ped.SeatIndex == VehicleSeat.Driver)
                             {
                                 bool exitPressed = Game.IsControlPressed(Control.VehicleExit);
@@ -432,7 +415,6 @@ namespace EngineStateManager
                 bool inPostExitGrace = isPlane && (now < t.ExitGraceUntilTime);
                 bool inAnyGrace = inEnterPreempt || inPreExitGrace || inPostExitGrace;
 
-                // Exit detection: only persist if armed.
                 if (t.WasPlayerInsideLastUpdate && !isInsideThisAircraftNow)
                 {
                     if (t.ArmedForPersistence)
@@ -441,7 +423,6 @@ namespace EngineStateManager
                         t.NextReassertTime = 0;
                         t.ExitDetectedTime = now;
 
-                        // Ensure grace window is set correctly based on plane type
                         if (isPlane)
                         {
                             int exitGrace = isPropPlane ? _propExitGraceMs : _jetExitGraceMs;
@@ -456,7 +437,7 @@ namespace EngineStateManager
                     }
                     else
                     {
-                        // Cold exit: clear enforcement, clear sticky flags.
+                    
                         t.HasExited = false;
                         t.ExitGraceUntilTime = 0;
                         t.ExitPreemptUntilTime = 0;
@@ -473,28 +454,23 @@ namespace EngineStateManager
 
                 t.WasPlayerInsideLastUpdate = isInsideThisAircraftNow;
 
-                // If the player is inside this aircraft, we never want a ghost pilot occupying a seat.
                 if (isInsideThisAircraftNow && t.GhostPilotPedHandle != 0)
                     CleanupGhostPilot(t, "PlayerInside");
 
-                // If inside and not in any grace window, do not enforce.
                 if (isInsideThisAircraftNow && !inAnyGrace)
                 {
                     continue;
                 }
-                // If not in grace and not post-exit armed, do nothing.
+                
                 if (!inAnyGrace && !t.HasExited)
                     continue;
 
-                // Prop planes: keep an invisible driver seated to prevent Rockstar empty-seat prop stall.
                 if (isPropPlane && t.HasExited)
                     EnsureGhostPilot(v, t, now);
 
-                // Rate limiting outside grace
                 if (!inAnyGrace && now < t.NextReassertTime)
                     continue;
 
-                // Maintain keep-engine-on flag during grace / post-exit
                 NativeCompat.SetVehicleKeepEngineOn(handle, true);
                 if (isJet) NativeCompat.SetVehicleJetEngineOn(handle, true);
 
@@ -505,18 +481,15 @@ namespace EngineStateManager
 
                 if (shouldReassertEngine)
                 {
-                    // For planes, disableAutoStart MUST be false so we don't accidentally start cold planes
                     Function.Call(Hash.SET_VEHICLE_ENGINE_ON, handle, true, true, isPlane ? false : true);
                     Function.Call(Hash.SET_VEHICLE_UNDRIVEABLE, handle, false);
                 }
 
-                // Prop-plane post-exit: try to keep some RPM floor during grace (Rockstar may still stall)
                 if (isPropPlane && inPostExitGrace && t.HasExited)
                 {
                     SafeForceRpmFloor(v, t, _propRpmFloorDuringTransitions);
                 }
 
-                // Jet post-exit shaping: first 250ms hold floor; afterwards idle clamp
                 if (isJet && inPostExitGrace && !isInsideThisAircraftNow)
                 {
                     int sinceExit = (t.ExitDetectedTime > 0) ? (now - t.ExitDetectedTime) : 9999;
@@ -539,7 +512,6 @@ namespace EngineStateManager
                     );
                 }
 
-                // Scheduling: every frame during grace, otherwise interval-based
                 int perAircraftMs = isPlane ? Math.Min(_reassertPerAircraftMs, 150) : _reassertPerAircraftMs;
                 t.NextReassertTime = inAnyGrace ? now : (now + perAircraftMs);
             }
@@ -575,11 +547,9 @@ namespace EngineStateManager
 
         int veh = plane.Handle;
 
-        // Don't spawn/respawn while we are suppressing during enter attempts.
         if (now < t.GhostSuppressUntilTime)
             return;
 
-        // If player is back inside, never keep the ghost around.
         Ped player = Game.Player?.Character;
 
         if (player != null && player.Exists() && !player.IsInVehicle() && NativeCompat.IsPedGettingIntoAnyVehicle(player.Handle))
@@ -609,7 +579,6 @@ namespace EngineStateManager
             return;
         }
 
-        // If ghost exists and is seated as driver, we're done.
         if (t.GhostPilotPedHandle != 0 && NativeCompat.DoesEntityExist(t.GhostPilotPedHandle))
         {
             int seated = NativeCompat.GetPedInVehicleSeat(veh, -1);
@@ -619,12 +588,9 @@ namespace EngineStateManager
                 return;
             }
 
-
-            // Ped exists but isn't in seat: remove and recreate (rare ejection cases).
             CleanupGhostPilot(t, "GhostNotSeated");
         }
 
-        // Request model (non-blocking). We'll spawn as soon as it's loaded.
         uint model = (uint)GHOST_PILOT_MODEL;
         if (!NativeCompat.HasModelLoaded(model))
         {
