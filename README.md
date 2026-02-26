@@ -23,6 +23,8 @@ Every feature is modular and fully configurable via INI.
 #### **-** Tracks vehicle engine state per entity
 #### **-** Troubleshooting debug logging (if enabled)
 #### **-** Designed for future GTA updates
+#### **-** Disable aircraft stalling when the aircraft is flying too slow (if enabled)
+#### **-** Disable aircraft stalling if the aircraft is damaged. (if enabled)
 
 ### **[ Configuration Options ]**
 All features are configurable via: **EngineStateManager.ini**
