@@ -8,10 +8,6 @@ Aircraft, helicopters, and ground vehicles are all supported.
 
 Every feature is modular and fully configurable via INI.
 
-**[ NOTE ]**
-**PLANE ENGINE PERSISTENCE IS EXPERIMENTAL AND NOT RECOMMENDED USE IN A REGULAR PLAYTHROUGH!**
-**THIS MIGHT CHANGE WITH FUTURE UPDATES.**
-
 ## **[ FEATURES ]**
 #### **-** Prevents engines from shutting off when exiting vehicles
 #### **-** Blocks GTA V’s automatic engine startup that works across all supported vehicle classes
@@ -38,17 +34,12 @@ Changes only apply on next script reload.
 #### **-** Latest **ScriptHookVDotNet v3** for [**Enhanced**](https://www.gta5-mods.com/tools/script-hook-v-net-enhanced) or [**Legacy**](https://www.gta5-mods.com/tools/scripthookv-net)
 
 ### [ Known Issues ]
-**Planes engine persistence works, but it has lots of inconsistencies that I haven't been able to fix yet.
-Exiting a plane with the engine running (whether it's a Jet or Prop plane) briefly dips engine RPM then picks the rpm back up again. Same goes for entering a plane that has it's engine running.
-Jet planes don't idle at they're idle speed when exiting them.**
-
-**Natively prop planes are impossible to keep running when exiting them (unless a prop plane rotor hash exists but has been hidden by rockstar), so I've decided to do a temporary work around by spawning an
+- **Jet planes don't idle at they're idle speed when exiting them.**
+- **Natively prop planes are impossible to keep running when exiting them (unless a prop plane rotor hash exists but has been hidden by rockstar), so I've decided to do a temporary work around by spawning an
 invisible ped in the prop plane the player was last in to keep the engine idling.**
-#### **These are the main reasons that the EnablePlanePersistence ini option is false by default.**
 #### **If you encounter any other issues, please include your EngineStateManager.log when reporting.**
 
 ### **[ Planned Upcoming Features ]**
-#### **-** _Per-vehicle persistence profiles_
 #### **-** _Separate aircraft logic modes_
 #### **-** _Advanced idle RPM control_
 #### **-** _Expanded animation handling_
