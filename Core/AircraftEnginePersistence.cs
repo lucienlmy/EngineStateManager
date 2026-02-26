@@ -28,11 +28,9 @@ namespace EngineStateManager
 
             public bool IsPropPlane;
 
-            // Prop-plane workaround: invisible 'ghost pilot' to prevent Rockstar empty-seat prop stall
             public int GhostPilotPedHandle;
             public bool GhostPilotActive;
 
-            // "Sacred" guard: only true if we observed engine ON while player was seated.
             public bool ArmedForPersistence;
             public bool EngineWasOnWhileSeated;
 
@@ -42,9 +40,9 @@ namespace EngineStateManager
 
             // Timing
             public int NextReassertTime;
-            public int ExitGraceUntilTime;       // post-exit enforcement window
-            public int ExitPreemptUntilTime;     // while still in exit animation / transition
-            public int EnterPreemptUntilTime;    // while entering animation / transition
+            public int ExitGraceUntilTime;       
+            public int ExitPreemptUntilTime;     
+            public int EnterPreemptUntilTime;    
 
             // Prevent respawning ghost pilot during player enter animation / nearby enter attempts
             public int GhostSuppressUntilTime;
@@ -935,4 +933,5 @@ namespace EngineStateManager
             _keyBuffer.Clear();
         }
     }
+
 }
