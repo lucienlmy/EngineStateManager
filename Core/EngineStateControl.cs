@@ -1,4 +1,16 @@
-﻿using GTA;
+
+// Written by:
+// 
+// ███╗   ██╗ ██████╗  ██████╗██╗  ██╗ █████╗ ██╗      █████╗ 
+// ████╗  ██║██╔═══██╗██╔════╝██║  ██║██╔══██╗██║     ██╔══██╗
+// ██╔██╗ ██║██║   ██║██║     ███████║███████║██║     ███████║
+// ██║╚██╗██║██║   ██║██║     ██╔══██║██╔══██║██║     ██╔══██║
+// ██║ ╚████║╚██████╔╝╚██████╗██║  ██║██║  ██║███████╗██║  ██║
+// ╚═╝  ╚═══╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
+//
+//                    N O C H A L A
+
+using GTA;
 using GTA.Native;
 using System;
 using System.Windows.Forms;
@@ -233,6 +245,7 @@ public sealed class EngineStateControl : Script
         _override = EngineOverrideState.None;
         _targetVehicleHandle = 0;
         _blockRestartUntilGameTime = 0;
+
     }
 
     private static bool IsEngineRunning(Vehicle veh)
