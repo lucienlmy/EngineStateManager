@@ -8,12 +8,14 @@
 // ██║ ╚████║╚██████╔╝╚██████╗██║  ██║██║  ██║███████╗██║  ██║
 // ╚═╝  ╚═══╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
 //
-//                    N O C H A L A
+//          ░░▒▒▓▓ https://github.com/Nochala ▓▓▒▒░░
 
 using GTA;
 using System;
 using System.IO;
 using System.Runtime;
+using System.Windows.Forms;
+using Control = GTA.Control;
 
 namespace EngineStateManager
 {
@@ -106,6 +108,11 @@ namespace EngineStateManager
         public static bool EngineToggleEnabled { get { EnsureLoaded(); return _engineToggleEnabled; } }
         public static bool EngineToggleAnimations { get { EnsureLoaded(); return _engineToggleAnimations; } }
         public static string EngineToggleKeyString { get { EnsureLoaded(); return _engineToggleKeyString; } }
+        public static int EngineToggleMainVk { get { EnsureLoaded(); return _engineToggleMainVk; } }
+
+        public static bool EngineToggleControllerEnabled { get { EnsureLoaded(); return _engineToggleControllerEnabled; } }
+        public static Control EngineToggleControllerMain { get { EnsureLoaded(); return _engineToggleControllerMain; } }
+        public static string EngineToggleControllerString { get { EnsureLoaded(); return _engineToggleControllerString; } }
 
         // ===== MainPersist (loose sections) =====
         public static bool DisableAutoStart { get { EnsureLoaded(); return _disableAutoStart; } }
@@ -144,6 +151,12 @@ namespace EngineStateManager
         private static bool _engineToggleEnabled = true;
         private static bool _engineToggleAnimations = true;
         private static string _engineToggleKeyString = "Z";
+        private static int _engineToggleMainVk = 0x5A; // Z
+
+        // Controller support (optional)
+        private static bool _engineToggleControllerEnabled = false;
+        private static string _engineToggleControllerString = "VehicleDuck";
+        private static Control _engineToggleControllerMain = Control.VehicleDuck;
 
         private static bool _disableAutoStart = true;
         private static bool _disableAutoShutdown = true;
@@ -219,6 +232,13 @@ namespace EngineStateManager
             _engineToggleAnimations = ReadBool(_ini, "EngineToggleKeys", "ANIMATIONS", _engineToggleAnimations);
             _engineToggleKeyString = ReadString(_ini, "EngineToggleKeys", "MAIN", _engineToggleKeyString);
 
+            // Virtual Key parsing (supports VK codes like 0x5A / 90, single chars like Z, or Keys enum names like F5)
+            _engineToggleMainVk = ParseVirtualKey(_engineToggleKeyString, _engineToggleMainVk);
+
+            // Optional controller support (Control enum name or numeric)
+            _engineToggleControllerEnabled = ReadBool(_ini, "EngineToggleKeys", "CONTROLLER_ENABLED", _engineToggleControllerEnabled);
+            _engineToggleControllerString = ReadString(_ini, "EngineToggleKeys", "CONTROLLER_MAIN", _engineToggleControllerString);
+            _engineToggleControllerMain = ParseControl(_engineToggleControllerString, _engineToggleControllerMain);
             // ModLoadNotification reads [Notifications]
             _notificationsEnabled = ReadBoolLoose(_ini, "Notifications", "Enabled", _notificationsEnabled);
 
@@ -275,6 +295,74 @@ namespace EngineStateManager
             try { return ini.GetValue(section, key, def); } catch { return def; }
         }
 
+
+
+        /// <summary>
+        /// Parses a keyboard hotkey into a Windows Virtual-Key code (VK_*).
+        /// Accepts:
+        ///  - Hex (e.g., 0x5A)
+        ///  - Decimal (e.g., 90)
+        ///  - Single characters (e.g., Z, 5)
+        ///  - Keys enum names (e.g., F5, LShiftKey, OemTilde)
+        ///  - Optional VK_ prefix (e.g., VK_F5)
+        /// </summary>
+        private static int ParseVirtualKey(string s, int fallbackVk)
+        {
+            if (string.IsNullOrWhiteSpace(s))
+                return fallbackVk;
+
+            s = s.Trim();
+
+            // Allow "VK_" prefix
+            if (s.StartsWith("VK_", StringComparison.OrdinalIgnoreCase))
+                s = s.Substring(3);
+
+            // Hex / decimal numeric
+            if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                if (int.TryParse(s.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out int hex))
+                    return hex & 0xFF;
+                return fallbackVk;
+            }
+
+            if (int.TryParse(s, out int dec))
+                return dec & 0xFF;
+
+            // Single char shorthands (letters/digits)
+            if (s.Length == 1)
+            {
+                char c = char.ToUpperInvariant(s[0]);
+                if (c >= 'A' && c <= 'Z') return (int)c;           // 0x41..0x5A
+                if (c >= '0' && c <= '9') return (int)c;           // 0x30..0x39
+            }
+
+            // Keys enum name
+            if (Enum.TryParse(s, ignoreCase: true, out Keys key))
+                return ((int)key) & 0xFF;
+
+            return fallbackVk;
+        }
+
+        /// <summary>
+        /// Parses a controller binding as a GTA.Control enum name (e.g., VehicleDuck) or numeric value.
+        /// </summary>
+        private static Control ParseControl(string s, Control fallback)
+        {
+            if (string.IsNullOrWhiteSpace(s))
+                return fallback;
+
+            s = s.Trim();
+
+            if (int.TryParse(s, out int num))
+            {
+                try { return (Control)num; } catch { return fallback; }
+            }
+
+            if (Enum.TryParse(s, ignoreCase: true, out Control parsed))
+                return parsed;
+
+            return fallback;
+        }
         private static int Clamp(int v, int min, int max)
         {
             if (v < min) return min;
