@@ -2,7 +2,7 @@
 ### [Watch Showcase Video Here](https://www.youtube.com/watch?v=lPuOtOzJlYk)
 GTA V ScriptHookVDotNet mod that gives players full control over vehicle engine behavior across all vehicle types.
 
-By default, GTA V  auto-starts and auto-shuts engines during enter/exit animations, breaking immersion and realism. EngineStateManager overrides these behaviors using native-level logic, allowing engines to persist while giving the player manual authority over engine state.
+By default, GTA V  auto-starts and auto-shuts engines during enter/exit animations, breaking immersion and realism. EngineStateManager overrides these behaviors, allowing engines to persist while giving the player manual authority over engine state.
 
 Aircraft, helicopters, and ground vehicles are all supported.
 
