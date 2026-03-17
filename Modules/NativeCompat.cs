@@ -23,6 +23,8 @@ namespace EngineStateManager
 
         private const ulong SET_VEHICLE_KEEP_ENGINE_ON_HASH = 0xB8FBC8B1330CA9B4UL;
 
+        private const ulong SET_VEHICLE_KEEP_ENGINE_ON_WHEN_ABANDONED_HASH = 0xB8FBC8B1330CA9B4UL;
+
         private const ulong SET_VEHICLE_ENGINE_ON_HASH = 0x2497C4717C8B881EUL;
 
         private const ulong IS_VEHICLE_ENGINE_ON_HASH = 0xAE31E7DF9B5B132EUL;
@@ -94,7 +96,17 @@ namespace EngineStateManager
 
         internal static void SetVehicleKeepEngineOnWhenAbandoned(int vehicleHandle, bool toggle)
         {
-            SetVehicleKeepEngineOn(vehicleHandle, toggle);
+            if (!DoesEntityExist(vehicleHandle)) return;
+
+            try
+            {
+                Function.Call((Hash)SET_VEHICLE_KEEP_ENGINE_ON_WHEN_ABANDONED_HASH, vehicleHandle, toggle);
+            }
+            catch (Exception ex)
+            {
+                LogNativeFailureOnce(nameof(SetVehicleKeepEngineOnWhenAbandoned), SET_VEHICLE_KEEP_ENGINE_ON_WHEN_ABANDONED_HASH, ex);
+                // Fail soft.
+            }
         }
 
 

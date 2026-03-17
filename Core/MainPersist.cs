@@ -15,29 +15,20 @@ using System.IO;
 using System.Collections.Generic;
 using GTA;
 using GTA.Native;
+
 namespace EngineStateManager
 {
-
     public sealed class MainPersist : Script
     {
-        private const string IniFileName = "EngineStateManager.ini";
-
-        // [Settings]
         private bool _disableAutoStart = true;
         private bool _disableAutoShutdown = true;
 
         private int _entryEnforceMs = 900;
         private int _exitEnforceMs = 1400;
 
-
-        // Tracking limits (feet). Semantics:
-        //   -1 = infinite tracking
-        //    0 = disable tracking/persistence entirely
-        //   >0 = distance cutoff in feet
         private float _maxDistanceToTrackFeet = -1f;
         private const float FeetPerMeter = 3.28084f;
 
-        // LRU
         private int _maxTrackedVehicle = 1;
 
         private readonly LinkedList<int> _persistedLru = new LinkedList<int>();
@@ -64,23 +55,35 @@ namespace EngineStateManager
         private bool _recentDriverEngineWasOn;
         private const int RecentDriverGraceMs = 2500;
 
+        private bool _seatShuffleExitPending;
+        private int _seatShuffleVehicleHandle;
+        private int _seatShuffleExitUntilGameTime;
+        private const int SeatShuffleExitEnforceMs = 14000;
+        private const int PostExitBrakeClearMs = 7000;
+        private const int HeavyVehiclePostExitBrakeClearMs = 9000;
+        private const int HeavyVehicleShuffleExitEnforceMs = 18000;
+
+        private int _postExitBrakeVehicleHandle;
+        private int _postExitBrakeUntilGameTime;
+        private bool _postExitBrakeKeepEngineOn;
+
         public MainPersist()
         {
-            Interval = 50;
+            Interval = 0;
 
             LoadIniOnce();
 
             Tick += OnTick;
             Aborted += OnAborted;
 
-            // Initialize transition tracking
             var p = Game.Player.Character;
             _wasInVehicle = p != null && p.Exists() && p.IsInVehicle();
             if (_wasInVehicle && p.CurrentVehicle != null && p.CurrentVehicle.Exists())
             {
                 _lastVehicleHandle = p.CurrentVehicle.Handle;
                 _lastVehicleEngineOn = NativeCompat.IsVehicleEngineOn(_lastVehicleHandle);
-                if (_lastVehicleEngineOn) _lastEngineOnGameTime = Game.GameTime;
+                if (_lastVehicleEngineOn)
+                    _lastEngineOnGameTime = Game.GameTime;
                 _lastVehicleWasAircraft = IsAircraft(p.CurrentVehicle);
             }
 
@@ -92,7 +95,10 @@ namespace EngineStateManager
             try
             {
                 if (_exitVehicleHandle != 0)
+                {
                     NativeCompat.SetVehicleKeepEngineOn(_exitVehicleHandle, false);
+                    NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(_exitVehicleHandle, false);
+                }
             }
             catch { }
         }
@@ -103,8 +109,8 @@ namespace EngineStateManager
             if (player == null || !player.Exists())
                 return;
 
-            int desiredInterval = _exitArmed ? 0 : 50;
-            if (Interval != desiredInterval) Interval = desiredInterval;
+            if (Interval != 0)
+                Interval = 0;
 
             bool inVehicle = player.IsInVehicle();
             Vehicle currentVeh = inVehicle ? player.CurrentVehicle : null;
@@ -120,6 +126,13 @@ namespace EngineStateManager
             else
                 ClearKeepEngineOnFlagIfAny();
 
+            if (_disableAutoShutdown)
+                UpdateSeatShuffleExitGuard(player, currentVeh);
+            else
+                ClearSeatShuffleExitGuard();
+
+            UpdatePostExitBrakeClear(player);
+
             if (inVehicle && currentVeh != null && currentVeh.Exists())
             {
                 if (currentVeh.Driver == player)
@@ -129,25 +142,26 @@ namespace EngineStateManager
                     _recentDriverEngineWasOn = NativeCompat.IsVehicleEngineOn(currentVeh.Handle);
                 }
 
-
-                if (!BusForcesOff()
-                    && currentVeh.Driver != player
-                    && currentVeh.Handle == _recentDriverVehicleHandle
-                    && (Game.GameTime - _recentDriverGameTime) <= RecentDriverGraceMs
-                    && _recentDriverEngineWasOn
-                    && !IsAircraft(currentVeh))
+                if (!BusForcesOff() &&
+                    currentVeh.Driver != player &&
+                    currentVeh.Handle == _recentDriverVehicleHandle &&
+                    (Game.GameTime - _recentDriverGameTime) <= RecentDriverGraceMs &&
+                    _recentDriverEngineWasOn &&
+                    !IsAircraft(currentVeh))
                 {
                     int enforceMs = Math.Max(_exitEnforceMs, 4500);
-                    ArmExit(currentVeh.Handle, source: "shuffle", enforceMsOverride: enforceMs);
+                    ArmExit(currentVeh.Handle, "shuffle", enforceMs);
                 }
 
                 int prevHandle = _lastVehicleHandle;
                 _lastVehicleHandle = currentVeh.Handle;
-                if (_lastVehicleHandle != prevHandle) _lastEngineOnGameTime = 0;
+                if (_lastVehicleHandle != prevHandle)
+                    _lastEngineOnGameTime = 0;
                 _lastVehicleWasAircraft = IsAircraft(currentVeh);
 
                 _lastVehicleEngineOn = NativeCompat.IsVehicleEngineOn(_lastVehicleHandle);
-                if (_lastVehicleEngineOn) _lastEngineOnGameTime = Game.GameTime;
+                if (_lastVehicleEngineOn)
+                    _lastEngineOnGameTime = Game.GameTime;
             }
 
             if (_disableAutoStart)
@@ -158,11 +172,8 @@ namespace EngineStateManager
 
             if (_disableAutoShutdown)
             {
-
                 TryArmExitIntent(player, currentVeh);
-
                 TryArmExitEarly(player, currentVeh);
-
 
                 if (_wasInVehicle && !inVehicle)
                     ArmExitFromTransition();
@@ -217,7 +228,7 @@ namespace EngineStateManager
 
             if (NativeCompat.IsVehicleEngineOn(_entryVehicleHandle))
             {
-                ModLogger.Info("[EntryGuard] Vehicle engine already running � canceling DisableAutoStart enforcement.");
+                ModLogger.Info("[EntryGuard] Vehicle engine already running - canceling DisableAutoStart enforcement.");
                 _entryArmed = false;
                 _entryVehicleHandle = 0;
                 return;
@@ -225,7 +236,6 @@ namespace EngineStateManager
 
             NativeCompat.ForceVehicleEngineOff_NoAutoStart(_entryVehicleHandle);
         }
-
 
         private void TryArmExitIntent(Ped player, Vehicle currentVeh)
         {
@@ -240,7 +250,7 @@ namespace EngineStateManager
 
             if (IsAircraft(currentVeh))
                 return;
-                
+
             if (BusForcesOff())
                 return;
 
@@ -256,21 +266,18 @@ namespace EngineStateManager
                 Function.Call<bool>(Hash.IS_DISABLED_CONTROL_PRESSED, 0, (int)Control.VehicleExit) ||
                 Function.Call<bool>(Hash.IS_DISABLED_CONTROL_PRESSED, 2, (int)Control.VehicleExit);
 
-            if (!exitPressed && !(exitHeld && NativeCompat.IsPedGettingOutOfVehicle(player.Handle)))
-                return;
-
-
-            if (!exitPressed)
+            if (!(exitPressed || (exitHeld && NativeCompat.IsPedGettingOutOfVehicle(player.Handle))))
                 return;
 
             int vehHandle = currentVeh.Handle;
-
             bool engineOn = NativeCompat.IsVehicleEngineOn(vehHandle);
             if (!engineOn)
                 return;
 
-            int enforceMs = Math.Max(_exitEnforceMs, 6500);
-            ArmExit(vehHandle, source: "exit_intent", enforceMsOverride: enforceMs);
+            int enforceMs = GetSeatShuffleExitEnforceMs(vehHandle);
+            ArmExit(vehHandle, "exit_intent", enforceMs);
+            ProtectRunningVehicleNow(vehHandle);
+            BeginPostExitBrakeClear(vehHandle, true);
         }
 
         private void TryArmExitEarly(Ped player, Vehicle currentVeh)
@@ -291,15 +298,12 @@ namespace EngineStateManager
             }
 
             int vehHandle = currentVeh.Handle;
-
-            // Snapshot from current state
             bool engineOn = NativeCompat.IsVehicleEngineOn(vehHandle);
             if (!engineOn)
                 return;
 
-            ArmExit(vehHandle, source: "native");
+            ArmExit(vehHandle, "native");
         }
-
 
         private void ArmExitFromTransition()
         {
@@ -319,7 +323,7 @@ namespace EngineStateManager
             if (!engineWasOnForExit)
                 return;
 
-            ArmExit(_lastVehicleHandle, source: "transition");
+            ArmExit(_lastVehicleHandle, "transition");
         }
 
         private void ArmExit(int vehHandle, string source, int enforceMsOverride = -1)
@@ -328,11 +332,9 @@ namespace EngineStateManager
             _exitVehicleHandle = vehHandle;
             _exitEnforceUntilGameTime = Game.GameTime + ((enforceMsOverride > 0) ? enforceMsOverride : _exitEnforceMs);
 
-
-            // LRU
             TouchPersistedVehicle(vehHandle);
-            // Start immediately
-            var busIntent = EngineOverrideBus.GetCurrent(out _, out _, out _);
+
+            EngineIntent busIntent = EngineOverrideBus.GetCurrent(out _, out _, out _);
             if (busIntent == EngineIntent.ForceOff)
             {
                 NativeCompat.SetVehicleKeepEngineOn(_exitVehicleHandle, false);
@@ -342,8 +344,170 @@ namespace EngineStateManager
             }
 
             NativeCompat.SetVehicleKeepEngineOn(_exitVehicleHandle, true);
+            NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(_exitVehicleHandle, true);
 
             LogInfoThrottled("mp_exit_arm", $"Exit armed ({source}). veh={vehHandle} engine was ON -> enforcing ON for {_exitEnforceMs}ms.", 500);
+        }
+
+        private void UpdateSeatShuffleExitGuard(Ped player, Vehicle currentVeh)
+        {
+            if (player == null || !player.Exists())
+            {
+                ClearSeatShuffleExitGuard();
+                return;
+            }
+
+            if (BusForcesOff())
+            {
+                ClearSeatShuffleExitGuard();
+                return;
+            }
+
+            bool playerInVehicle = player.IsInVehicle();
+
+            if (playerInVehicle && currentVeh != null && currentVeh.Exists() && !IsAircraft(currentVeh))
+            {
+                bool sameAsRecentDriverVehicle =
+                    _recentDriverVehicleHandle != 0 &&
+                    currentVeh.Handle == _recentDriverVehicleHandle &&
+                    (Game.GameTime - _recentDriverGameTime) <= RecentDriverGraceMs;
+
+                bool isPassengerOrShuffling = currentVeh.Driver != player;
+
+                if (sameAsRecentDriverVehicle && isPassengerOrShuffling && _recentDriverEngineWasOn)
+                    BeginOrRefreshSeatShuffleExitGuard(currentVeh);
+            }
+
+            if (!_seatShuffleExitPending)
+                return;
+
+            if (_seatShuffleVehicleHandle == 0 || !NativeCompat.DoesEntityExist(_seatShuffleVehicleHandle))
+            {
+                ClearSeatShuffleExitGuard();
+                return;
+            }
+
+            if (playerInVehicle)
+            {
+                if (currentVeh == null || !currentVeh.Exists() || currentVeh.Handle != _seatShuffleVehicleHandle)
+                {
+                    ClearSeatShuffleExitGuard();
+                    return;
+                }
+            }
+
+            if (Game.GameTime > _seatShuffleExitUntilGameTime)
+            {
+                if (!playerInVehicle)
+                    BeginPostExitBrakeClear(_seatShuffleVehicleHandle, true);
+
+                ClearSeatShuffleExitGuard();
+                return;
+            }
+
+            ProtectRunningVehicleNow(_seatShuffleVehicleHandle);
+
+            if (!playerInVehicle)
+                BeginPostExitBrakeClear(_seatShuffleVehicleHandle, true);
+        }
+
+        private void BeginOrRefreshSeatShuffleExitGuard(Vehicle veh)
+        {
+            if (veh == null || !veh.Exists())
+                return;
+
+            int vehHandle = veh.Handle;
+
+            _seatShuffleExitPending = true;
+            _seatShuffleVehicleHandle = vehHandle;
+            _seatShuffleExitUntilGameTime = Game.GameTime + GetSeatShuffleExitEnforceMs(vehHandle);
+        }
+
+        private void ClearSeatShuffleExitGuard()
+        {
+            _seatShuffleExitPending = false;
+            _seatShuffleVehicleHandle = 0;
+            _seatShuffleExitUntilGameTime = 0;
+        }
+
+        private bool IsHeavyRoadVehicleHandle(int vehHandle)
+        {
+            if (vehHandle == 0 || !NativeCompat.DoesEntityExist(vehHandle))
+                return false;
+
+            try
+            {
+                int vehicleClass = Function.Call<int>(Hash.GET_VEHICLE_CLASS, vehHandle);
+                return vehicleClass == 10 || vehicleClass == 11 || vehicleClass == 12 || vehicleClass == 17 || vehicleClass == 20;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private int GetSeatShuffleExitEnforceMs(int vehHandle)
+        {
+            int baseMs = IsHeavyRoadVehicleHandle(vehHandle) ? HeavyVehicleShuffleExitEnforceMs : SeatShuffleExitEnforceMs;
+            return Math.Max(_exitEnforceMs, baseMs);
+        }
+
+        private int GetPostExitBrakeClearDurationMs(int vehHandle)
+        {
+            return IsHeavyRoadVehicleHandle(vehHandle) ? HeavyVehiclePostExitBrakeClearMs : PostExitBrakeClearMs;
+        }
+
+        private void BeginPostExitBrakeClear(int vehHandle, bool keepEngineOn)
+        {
+            if (vehHandle == 0)
+                return;
+
+            _postExitBrakeVehicleHandle = vehHandle;
+            _postExitBrakeUntilGameTime = Game.GameTime + GetPostExitBrakeClearDurationMs(vehHandle);
+            _postExitBrakeKeepEngineOn = keepEngineOn;
+        }
+
+        private void UpdatePostExitBrakeClear(Ped player)
+        {
+            if (_postExitBrakeVehicleHandle == 0)
+                return;
+
+            if (Game.GameTime > _postExitBrakeUntilGameTime)
+            {
+                try { NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(_postExitBrakeVehicleHandle, false); } catch { }
+                _postExitBrakeVehicleHandle = 0;
+                _postExitBrakeUntilGameTime = 0;
+                _postExitBrakeKeepEngineOn = false;
+                return;
+            }
+
+            if (!NativeCompat.DoesEntityExist(_postExitBrakeVehicleHandle))
+            {
+                _postExitBrakeVehicleHandle = 0;
+                _postExitBrakeUntilGameTime = 0;
+                _postExitBrakeKeepEngineOn = false;
+                return;
+            }
+
+            if (player != null && player.Exists() && player.IsInVehicle())
+            {
+                Vehicle playerVeh = player.CurrentVehicle;
+                if (playerVeh != null && playerVeh.Exists() && playerVeh.Handle == _postExitBrakeVehicleHandle)
+                {
+                    try { NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(_postExitBrakeVehicleHandle, false); } catch { }
+                    _postExitBrakeVehicleHandle = 0;
+                    _postExitBrakeUntilGameTime = 0;
+                    _postExitBrakeKeepEngineOn = false;
+                    return;
+                }
+            }
+
+            if (_postExitBrakeKeepEngineOn)
+                ProtectRunningVehicleNow(_postExitBrakeVehicleHandle);
+
+            Function.Call(Hash.SET_VEHICLE_BRAKE, _postExitBrakeVehicleHandle, false);
+            Function.Call(Hash.SET_VEHICLE_HANDBRAKE, _postExitBrakeVehicleHandle, false);
+            Function.Call(Hash.SET_VEHICLE_BRAKE_LIGHTS, _postExitBrakeVehicleHandle, false);
         }
 
         private void ApplyExitEnforcement()
@@ -359,6 +523,7 @@ namespace EngineStateManager
                 _exitVehicleHandle = 0;
                 return;
             }
+
             if (Game.GameTime > _exitEnforceUntilGameTime)
             {
                 _exitArmed = false;
@@ -396,12 +561,11 @@ namespace EngineStateManager
                 catch { }
             }
 
-            NativeCompat.SetVehicleKeepEngineOn(_exitVehicleHandle, true);
+            ProtectRunningVehicleNow(_exitVehicleHandle);
 
-            if (!NativeCompat.IsVehicleEngineOn(_exitVehicleHandle))
-                ForceEngineOnHard(_exitVehicleHandle);
+            if (Game.Player.Character != null && Game.Player.Character.Exists() && !Game.Player.Character.IsInVehicle())
+                BeginPostExitBrakeClear(_exitVehicleHandle, true);
         }
-
 
         private static bool BusForcesOff()
         {
@@ -415,17 +579,27 @@ namespace EngineStateManager
             }
         }
 
-
         private static void ForceEngineOnHard(int vehHandle)
         {
             try { Function.Call(Hash.SET_VEHICLE_UNDRIVEABLE, vehHandle, false); } catch { }
             try { Function.Call(Hash.SET_VEHICLE_ENGINE_ON, vehHandle, true, true, false); } catch { }
+            try { Function.Call(Hash.SET_VEHICLE_ENGINE_ON, vehHandle, true, false, true); } catch { }
         }
 
+        private static void ProtectRunningVehicleNow(int vehHandle)
+        {
+            try { NativeCompat.SetVehicleKeepEngineOn(vehHandle, true); } catch { }
+            try { NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(vehHandle, true); } catch { }
+            try { Function.Call(Hash.SET_VEHICLE_UNDRIVEABLE, vehHandle, false); } catch { }
+            try { Function.Call(Hash.SET_VEHICLE_ENGINE_ON, vehHandle, true, true, false); } catch { }
+            try { Function.Call(Hash.SET_VEHICLE_ENGINE_ON, vehHandle, true, false, true); } catch { }
+            try { Function.Call(Hash.SET_VEHICLE_BRAKE, vehHandle, false); } catch { }
+            try { Function.Call(Hash.SET_VEHICLE_HANDBRAKE, vehHandle, false); } catch { }
+            try { Function.Call(Hash.SET_VEHICLE_BRAKE_LIGHTS, vehHandle, false); } catch { }
+        }
 
         private void MaintainKeepEngineOnFlag(Ped player, Vehicle currentVeh)
         {
-
             if (BusForcesOff())
             {
                 ClearKeepEngineOnFlagIfAny();
@@ -448,7 +622,6 @@ namespace EngineStateManager
                 return;
             }
 
-            // Skip aircraft by design
             if (IsAircraft(currentVeh))
             {
                 ClearKeepEngineOnFlagIfAny();
@@ -457,13 +630,13 @@ namespace EngineStateManager
 
             int h = currentVeh.Handle;
 
-            var busIntent = EngineOverrideBus.GetCurrent(out _, out _, out _);
+            EngineIntent busIntent = EngineOverrideBus.GetCurrent(out _, out _, out _);
             if (busIntent == EngineIntent.ForceOff)
             {
                 ClearKeepEngineOnFlagIfAny();
                 return;
             }
-            
+
             bool engineOnNow = NativeCompat.IsVehicleEngineOn(h);
             bool engineWasOnVeryRecently = (_lastVehicleHandle == h) && (Game.GameTime - _lastEngineOnGameTime) <= 1500;
 
@@ -472,9 +645,7 @@ namespace EngineStateManager
                 (h == _recentDriverVehicleHandle) &&
                 (Game.GameTime - _recentDriverGameTime) <= RecentDriverGraceMs;
 
-            bool shouldKeep =
-                engineOnNow ||
-                (inSeatShuffleGrace && engineWasOnVeryRecently);
+            bool shouldKeep = engineOnNow || (inSeatShuffleGrace && (engineWasOnVeryRecently || _recentDriverEngineWasOn));
 
             if (!shouldKeep)
             {
@@ -483,17 +654,15 @@ namespace EngineStateManager
             }
 
             if (_keepEngineOnVehicleHandle != 0 && _keepEngineOnVehicleHandle != h && NativeCompat.DoesEntityExist(_keepEngineOnVehicleHandle))
-            {
                 NativeCompat.SetVehicleKeepEngineOn(_keepEngineOnVehicleHandle, false);
-            }
 
             _keepEngineOnVehicleHandle = h;
-
             NativeCompat.SetVehicleKeepEngineOn(h, true);
 
-            if (!engineOnNow && inSeatShuffleGrace && engineWasOnVeryRecently)
+            if (!engineOnNow && inSeatShuffleGrace && (engineWasOnVeryRecently || _recentDriverEngineWasOn))
             {
                 ForceEngineOnHard(h);
+                Function.Call(Hash.SET_VEHICLE_ENGINE_ON, h, true, false, true);
             }
         }
 
@@ -503,7 +672,10 @@ namespace EngineStateManager
                 return;
 
             if (NativeCompat.DoesEntityExist(_keepEngineOnVehicleHandle))
+            {
                 NativeCompat.SetVehicleKeepEngineOn(_keepEngineOnVehicleHandle, false);
+                NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(_keepEngineOnVehicleHandle, false);
+            }
 
             _keepEngineOnVehicleHandle = 0;
         }
@@ -512,7 +684,6 @@ namespace EngineStateManager
         {
             try
             {
-                // Centralized INI load (Main.cs)
                 LogInfo($"INI: LoadIniOnce path={MainConfig.IniPathUsed} exists={MainConfig.IniExists}");
 
                 string sec = "(Main.cs)";
@@ -542,139 +713,12 @@ namespace EngineStateManager
             }
         }
 
-        private static string GetScriptsDir()
-        {
-            string baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
-            baseDir = Path.GetFullPath(baseDir);
-
-            string trimmed = baseDir.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar);
-            string leaf = Path.GetFileName(trimmed);
-            if (string.Equals(leaf, "scripts", StringComparison.OrdinalIgnoreCase))
-                return trimmed;
-
-            return Path.Combine(baseDir, "scripts");
-        }
-
-
-        private static readonly string[] IniSections = new[]
-        {
-            "Settings",
-            "EngineStateManager",
-            "MainPersist",
-            "General",
-        };
-
-        private static bool ReadBoolFromAnySection(ScriptSettings ini, string key, bool defaultValue, out string foundSection, out string rawValue)
-        {
-            foundSection = "";
-            rawValue = null;
-
-            foreach (var section in IniSections)
-            {
-                // tolerate inline comments / extra text.
-                string raw = ini.GetValue(section, key, (string)null);
-                if (raw == null)
-                    continue;
-
-                rawValue = raw;
-                foundSection = section;
-
-                if (TryParseBoolLoose(raw, out bool b))
-                    return b;
-
-                // If key exists but parse failed, fall back to default.
-                return defaultValue;
-            }
-
-            return defaultValue;
-        }
-
-        private static int ReadIntFromAnySection(ScriptSettings ini, string key, int defaultValue, int min, int max, out string foundSection, out string rawValue)
-        {
-            foundSection = "";
-            rawValue = null;
-
-            foreach (var section in IniSections)
-            {
-                string raw = ini.GetValue(section, key, (string)null);
-                if (raw == null)
-                    continue;
-
-                rawValue = raw;
-                foundSection = section;
-
-                if (TryParseIntLoose(raw, out int v))
-                    return Clamp(v, min, max);
-
-                return Clamp(defaultValue, min, max);
-            }
-
-            return Clamp(defaultValue, min, max);
-        }
-
-        private static bool TryParseBoolLoose(string raw, out bool value)
-        {
-            value = false;
-            if (raw == null) return false;
-
-            string token = StripInlineJunk(raw);
-            if (token.Length == 0) return false;
-
-            token = token.ToLowerInvariant();
-
-            if (token == "true" || token == "1" || token == "yes" || token == "y" || token == "on")
-            {
-                value = true;
-                return true;
-            }
-
-            if (token == "false" || token == "0" || token == "no" || token == "n" || token == "off")
-            {
-                value = false;
-                return true;
-            }
-
-            return false;
-        }
-
-        private static bool TryParseIntLoose(string raw, out int value)
-        {
-            value = 0;
-            if (raw == null) return false;
-
-            string token = StripInlineJunk(raw);
-            if (token.Length == 0) return false;
-
-            return int.TryParse(token, out value);
-        }
-
-        private static string StripInlineJunk(string raw)
-        {
-            string s = raw.Trim();
-
-            int cut = s.Length;
-
-            int idx;
-            idx = s.IndexOf(';'); if (idx >= 0 && idx < cut) cut = idx;
-            idx = s.IndexOf('#'); if (idx >= 0 && idx < cut) cut = idx;
-            idx = s.IndexOf('('); if (idx >= 0 && idx < cut) cut = idx;
-
-            idx = s.IndexOf("//", StringComparison.Ordinal);
-            if (idx >= 0 && idx < cut) cut = idx;
-
-            s = s.Substring(0, cut).Trim();
-
-            int sp = s.IndexOfAny(new[] { ' ', '\t' });
-            if (sp > 0)
-                s = s.Substring(0, sp).Trim();
-
-            return s;
-        }
-
         private static int Clamp(int v, int min, int max)
         {
-            if (v < min) return min;
-            if (v > max) return max;
+            if (v < min)
+                return min;
+            if (v > max)
+                return max;
             return v;
         }
 
@@ -685,7 +729,7 @@ namespace EngineStateManager
                 if (v == null || !v.Exists())
                     return false;
 
-                var m = v.Model;
+                Model m = v.Model;
                 return m.IsPlane || m.IsHelicopter;
             }
             catch
@@ -699,7 +743,6 @@ namespace EngineStateManager
             if (!_disableAutoShutdown)
                 return false;
 
-            // Either setting can disable the whole tracking system.
             if (_maxDistanceToTrackFeet == 0f)
                 return false;
 
@@ -714,7 +757,6 @@ namespace EngineStateManager
             if (vehHandle == 0)
                 return;
 
-            // If the entity doesn't exist, don't track it.
             if (!NativeCompat.DoesEntityExist(vehHandle))
                 return;
 
@@ -722,14 +764,12 @@ namespace EngineStateManager
             if (v == null || !v.Exists())
                 return;
 
-            // Cars only; do not track aircraft here.
             if (IsAircraft(v))
                 return;
 
             if (_persistedSet.Contains(vehHandle))
             {
-                // Move to most-recent end
-                var node = _persistedLru.Find(vehHandle);
+                LinkedListNode<int> node = _persistedLru.Find(vehHandle);
                 if (node != null)
                 {
                     _persistedLru.Remove(node);
@@ -742,7 +782,6 @@ namespace EngineStateManager
                 _persistedLru.AddLast(vehHandle);
             }
 
-            // Enforce cap
             EvictIfOverLimit();
         }
 
@@ -751,20 +790,17 @@ namespace EngineStateManager
             if (player == null || !player.Exists())
                 return;
 
-            // If disabled at runtime, clear everything.
             if (!IsCarPersistenceEnabled())
             {
                 ClearAllPersistedVehicles();
                 return;
             }
 
-            // Iterate a copy of handles in LRU order (oldest -> newest)
-            var node = _persistedLru.First;
+            LinkedListNode<int> node = _persistedLru.First;
             while (node != null)
             {
-                var next = node.Next;
+                LinkedListNode<int> next = node.Next;
                 int handle = node.Value;
-
                 bool remove = false;
 
                 if (handle == 0 || !NativeCompat.DoesEntityExist(handle))
@@ -778,27 +814,19 @@ namespace EngineStateManager
                     {
                         remove = true;
                     }
-                    else
+                    else if (_maxDistanceToTrackFeet > 0f)
                     {
-                        if (_maxDistanceToTrackFeet > 0f)
+                        try
                         {
-                            try
+                            float distFeet = player.Position.DistanceTo(v.Position) * FeetPerMeter;
+                            if (distFeet > _maxDistanceToTrackFeet)
                             {
-                                float distFeet = player.Position.DistanceTo(v.Position) * FeetPerMeter;
-                                if (distFeet > _maxDistanceToTrackFeet)
-                                {
-                                    // Too far: stop persisting this car.
-                                    NativeCompat.SetVehicleKeepEngineOn(handle, false);
-                                    LogInfoThrottled("mp_car_cancel_dist",
-                                        $"Car untracked (distance). veh={handle} distFeet={distFeet:0} > max={_maxDistanceToTrackFeet:0}.", 1000);
-                                    remove = true;
-                                }
-                            }
-                            catch
-                            {
-                                // If distance calc fails, keep tracking.
+                                NativeCompat.SetVehicleKeepEngineOn(handle, false);
+                                LogInfoThrottled("mp_car_cancel_dist", $"Car untracked (distance). veh={handle} distFeet={distFeet:0} > max={_maxDistanceToTrackFeet:0}.", 1000);
+                                remove = true;
                             }
                         }
+                        catch { }
                     }
                 }
 
@@ -811,7 +839,6 @@ namespace EngineStateManager
                 node = next;
             }
 
-            // Enforce cap after cleanup
             EvictIfOverLimit();
         }
 
@@ -854,12 +881,10 @@ namespace EngineStateManager
                 }
                 catch { }
 
-                LogInfoThrottled("mp_car_evict",
-                    $"Car evicted (LRU cap={cap}). veh={oldest}.", 1000);
+                LogInfoThrottled("mp_car_evict", $"Car evicted (LRU cap={cap}). veh={oldest}.", 1000);
             }
         }
 
-        // Logging wrappers 
         private static void LogInfo(string msg)
         {
             try
@@ -880,7 +905,6 @@ namespace EngineStateManager
             catch { }
         }
 
-
         private static void LogError(string msg, Exception ex = null)
         {
             try
@@ -888,17 +912,27 @@ namespace EngineStateManager
                 if (!EngineStateManager.ModLogger.Enabled)
                     return;
 
-                if (ex != null) EngineStateManager.ModLogger.Error(msg, ex);
-                else EngineStateManager.ModLogger.Error(msg);
+                if (ex != null)
+                    EngineStateManager.ModLogger.Error(msg, ex);
+                else
+                    EngineStateManager.ModLogger.Error(msg);
             }
             catch { }
         }
 
         private static Vehicle VehicleFromHandle(int handle)
         {
-            if (handle == 0) return null;
-            try { return Entity.FromHandle(handle) as Vehicle; }
-            catch { return null; }
+            if (handle == 0)
+                return null;
+
+            try
+            {
+                return Entity.FromHandle(handle) as Vehicle;
+            }
+            catch
+            {
+                return null;
+            }
         }
     }
 }

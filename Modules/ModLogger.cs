@@ -11,53 +11,115 @@
 //          ░░▒▒▓▓ https://github.com/Nochala ▓▓▒▒░░
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace EngineStateManager
 {
     internal static class ModLogger
     {
-        private static string _logPath;
+        private static readonly object _writeLock = new object();
+        private static readonly object _throttleLock = new object();
+        private static readonly Dictionary<string, int> _lastLogTickByKey = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        private static string _logPath = "";
         private static bool _enabled;
+        private static bool _sessionInitialized;
 
-        // Unique per script launch
         public static string SessionId { get; private set; } = "";
-
         public static bool Enabled => _enabled;
+        public static string LogPath => _logPath ?? "";
 
         public static void Init(bool enabled, string preferredPath, string fallbackPath)
         {
-            _enabled = enabled;
-            if (!_enabled)
-                return;
+            _enabled = false;
 
-            SessionId = $"{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("N").Substring(0, 8)}";
-
-            if (!TryInitPath(preferredPath) && !TryInitPath(fallbackPath))
+            if (!enabled)
             {
-                _enabled = false;
+                _logPath = "";
                 return;
             }
 
-            // Header
-            Info("=== EngineStateManager Log Started ===");
-            Info("Timestamp: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-            Info("SessionId: " + SessionId);
-            Info("LogPath: " + _logPath);
-        }
+            string resolvedPath = ResolvePath(preferredPath, fallbackPath);
+            if (string.IsNullOrWhiteSpace(resolvedPath))
+            {
+                _logPath = "";
+                return;
+            }
 
-        private static bool TryInitPath(string path)
-        {
+            bool firstInitThisSession = !_sessionInitialized;
+            bool pathChanged = !string.Equals(_logPath, resolvedPath, StringComparison.OrdinalIgnoreCase);
+
             try
             {
-                string dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir))
+                string dir = Path.GetDirectoryName(resolvedPath);
+                if (!string.IsNullOrWhiteSpace(dir))
                     Directory.CreateDirectory(dir);
 
-                _logPath = path;
+                if (firstInitThisSession)
+                {
+                    File.WriteAllText(resolvedPath, string.Empty);
+                    SessionId = $"{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("N").Substring(0, 8)}";
+                    lock (_throttleLock)
+                        _lastLogTickByKey.Clear();
+                }
+                else if (!File.Exists(resolvedPath))
+                {
+                    File.WriteAllText(resolvedPath, string.Empty);
+                }
 
-                // HARD RESET LOG ON STARTUP
-                File.WriteAllText(_logPath, string.Empty);
+                _logPath = resolvedPath;
+                _enabled = true;
+
+                if (firstInitThisSession)
+                {
+                    _sessionInitialized = true;
+                    Info("=== EngineStateManager Log Started ===");
+                    Info("Timestamp: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+                    Info("SessionId: " + SessionId);
+                    Info("LogPath: " + _logPath);
+                }
+                else if (pathChanged)
+                {
+                    Info("=== Logger Path Changed ===");
+                    Info("Timestamp: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+                    Info("SessionId: " + SessionId);
+                    Info("LogPath: " + _logPath);
+                }
+            }
+            catch
+            {
+                _enabled = false;
+                _logPath = "";
+            }
+        }
+
+        private static string ResolvePath(string preferredPath, string fallbackPath)
+        {
+            if (TryPreparePath(preferredPath, out string preferredResolved))
+                return preferredResolved;
+
+            if (TryPreparePath(fallbackPath, out string fallbackResolved))
+                return fallbackResolved;
+
+            return "";
+        }
+
+        private static bool TryPreparePath(string path, out string resolvedPath)
+        {
+            resolvedPath = "";
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                    return false;
+
+                string fullPath = Path.GetFullPath(path);
+                string dir = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrWhiteSpace(dir))
+                    Directory.CreateDirectory(dir);
+
+                resolvedPath = fullPath;
                 return true;
             }
             catch
@@ -66,27 +128,29 @@ namespace EngineStateManager
             }
         }
 
-
-        private static readonly object _throttleLock = new object();
-        private static readonly System.Collections.Generic.Dictionary<string, int> _lastLogTickByKey =
-            new System.Collections.Generic.Dictionary<string, int>();
-
         public static void InfoThrottled(string key, string message, int minIntervalMs)
         {
             if (!_enabled) return;
-            if (string.IsNullOrEmpty(key)) { Info(message); return; }
+            if (string.IsNullOrEmpty(key))
+            {
+                Info(message);
+                return;
+            }
+
             int now = Environment.TickCount;
             bool allow = false;
+
             lock (_throttleLock)
             {
-                int last;
-                if (!_lastLogTickByKey.TryGetValue(key, out last) || unchecked(now - last) >= minIntervalMs)
+                if (!_lastLogTickByKey.TryGetValue(key, out int last) || unchecked(now - last) >= minIntervalMs)
                 {
                     _lastLogTickByKey[key] = now;
                     allow = true;
                 }
             }
-            if (allow) Info(message);
+
+            if (allow)
+                Info(message);
         }
 
         public static void Info(string message) => Write("INFO", message);
@@ -99,7 +163,6 @@ namespace EngineStateManager
 
             Write("ERROR", message);
         }
-
 
         public static void PersistedVehicle(
             string tag,
@@ -122,14 +185,16 @@ namespace EngineStateManager
 
         private static void Write(string level, string message)
         {
-            if (!_enabled || string.IsNullOrEmpty(_logPath))
+            if (!_enabled || string.IsNullOrWhiteSpace(_logPath))
                 return;
 
             try
             {
-                // Include SessionId in every line
                 string line = $"[{DateTime.Now:HH:mm:ss}] [{SessionId}] {level}: {message}";
-                File.AppendAllText(_logPath, line + Environment.NewLine);
+                lock (_writeLock)
+                {
+                    File.AppendAllText(_logPath, line + Environment.NewLine);
+                }
             }
             catch
             {

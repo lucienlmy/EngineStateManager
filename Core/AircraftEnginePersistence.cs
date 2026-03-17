@@ -1,4 +1,3 @@
-
 // Written by:
 // 
 // ███╗   ██╗ ██████╗  ██████╗██╗  ██╗ █████╗ ██╗      █████╗ 
@@ -24,68 +23,49 @@ namespace EngineStateManager
         {
             public int Handle;
             public VehicleClass ClassType;
-
             public bool IsPropPlane;
-
-            // Prop-plane workaround: invisible 'ghost pilot' to prevent Rockstar empty-seat prop stall
             public int GhostPilotPedHandle;
             public bool GhostPilotActive;
-
-            // "Sacred" guard: only true if we observed engine ON while player was seated.
             public bool ArmedForPersistence;
             public bool EngineWasOnWhileSeated;
-
-            // State machine
             public bool HasExited;
             public bool WasPlayerInsideLastUpdate;
-
-            // Timing
             public int NextReassertTime;
-            public int ExitGraceUntilTime;       // post-exit enforcement window
-            public int ExitPreemptUntilTime;     // while still in exit animation / transition
-            public int EnterPreemptUntilTime;    // while entering animation / transition
-
-            // Prevent respawning ghost pilot during player enter animation / nearby enter attempts
+            public int ExitGraceUntilTime;
+            public int ExitPreemptUntilTime;
+            public int EnterPreemptUntilTime;
             public int GhostSuppressUntilTime;
             public int ExitDetectedTime;
-
-            // RPM smoothing / dip suppression
             public float LastKnownRpm;
-
-            // LRU pruning
             public int LastTouchedTime;
         }
 
-        // ===== INI / SETTINGS =====
         private int _maxTrackedAircraft = 20;
-        private int _maintenanceIntervalMs = 250;      // pruning/maintenance cadence
-        private int _reassertPerAircraftMs = 900;      // baseline reassert interval (outside grace)
-        private float _maxDistanceToTrack = -1f;       // <0 disables
-
+        private int _maintenanceIntervalMs = 250;
+        private int _reassertPerAircraftMs = 900;
+        private float _maxDistanceToTrack = -1f;
         private bool _onlyReassertWhenEngineOff = true;
         private bool _forceHeliBladesFullSpeedAfterExit = true;
-
         private bool _enableHeliPersistence = true;
         private bool _enablePlanePersistence = true;
-
-        // Grace windows
         private int _jetExitGraceMs = 800;
         private int _jetEnterGraceMs = 800;
-
         private int _propExitGraceMs = 2600;
         private int _propEnterGraceMs = 1200;
-
-        // RPM floors
+        private int _heliExitGraceMs = 1200;
+        private int _aircraftRecentPilotGraceMs = 2500;
+        private int _aircraftShuffleExitEnforceMs = 14000;
+        private int _aircraftRecentPilotVehicleHandle;
+        private int _aircraftRecentPilotGameTime;
+        private bool _aircraftRecentPilotEngineWasOn;
         private float _jetRpmFloorDuringTransitions = 0.25f;
         private float _propRpmFloorDuringTransitions = 0.25f;
-
-        // Applied AFTER exit (never during entry/exit animation)
+        private float _heliExitRpmFloor = 0.85f;
+        private float _destroyedEngineHealthThreshold = -3000.0f;
         private float _jetIdleRpm = 0.10f;
-
         private bool _enableDebugLogging = false;
         private string _debugLogFile = "EngineStateManager.log";
 
-        // ===== RUNTIME =====
         private readonly Dictionary<int, TrackedAircraft> _tracked = new Dictionary<int, TrackedAircraft>(64);
         private readonly List<int> _keyBuffer = new List<int>(64);
 
@@ -96,7 +76,7 @@ namespace EngineStateManager
         public AircraftEnginePersistence()
         {
             _iniAbsPath = MainConfig.IniPathUsed;
-            LoadIniAbsolute(_iniAbsPath);
+            LoadConfig();
 
             string scriptsDir = GetScriptsDir();
             string logFile = string.IsNullOrWhiteSpace(_debugLogFile)
@@ -109,8 +89,7 @@ namespace EngineStateManager
 
             ModLogger.Init(_enableDebugLogging, preferredLog, fallbackLog);
 
-            Interval = 0; // every frame to catch one-frame transitions
-
+            Interval = 0;
             Tick += OnTick;
             Aborted += OnAborted;
 
@@ -137,12 +116,8 @@ namespace EngineStateManager
                 _nextHeartbeatTime = now + 5000;
             }
 
-            // =========================================================
-            // ENTRY PREEMPT (Planes only)
-            // =========================================================
             if (_enablePlanePersistence && !ped.IsInVehicle())
             {
-                // Prefer TRYING_TO_ENTER 
                 int enteringHandle = 0;
                 try { enteringHandle = NativeCompat.GetVehiclePedIsTryingToEnter(ped.Handle); }
                 catch { enteringHandle = 0; }
@@ -159,16 +134,14 @@ namespace EngineStateManager
                     if (enteringVeh != null && enteringVeh.Exists() && enteringVeh.ClassType == VehicleClass.Planes)
                     {
                         bool engineOn = NativeCompat.IsVehicleEngineOn(enteringHandle);
-
-                        // Sacred: only do entry preempt if already running.
                         if (engineOn)
                         {
                             TrackedAircraft t = GetOrCreateTracked(enteringHandle, now);
                             t.ClassType = VehicleClass.Planes;
 
-                            // If we previously spawned a ghost pilot for this prop plane, remove it now so the player doesn't 'eject' an invisible driver on entry.
                             if (t.GhostPilotPedHandle != 0)
                                 CleanupGhostPilot(t, "PlayerEntering");
+
                             t.LastTouchedTime = now;
 
                             bool isPropPlane = HasPropellerBones(enteringVeh);
@@ -178,7 +151,6 @@ namespace EngineStateManager
 
                             NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(enteringHandle, true);
 
-                            // Jet helper is safe to keep asserted for jets only.
                             if (!isPropPlane)
                             {
                                 NativeCompat.SetVehicleJetEngineOn(enteringHandle, true);
@@ -197,16 +169,11 @@ namespace EngineStateManager
                 }
             }
 
-
-            // =========================================================
-            // GHOST PILOT ENTER DETECTION (Prop planes)
-            // =========================================================
             if (_enablePlanePersistence && !ped.IsInVehicle())
             {
                 bool isGettingIn = NativeCompat.IsPedGettingIntoAnyVehicle(ped.Handle);
                 if (isGettingIn)
                 {
-                    // Deterministic target: the vehicle the ped is TRYING to enter (more reliable than nearest-vehicle heuristics).
                     int tryingHandle = 0;
                     try { tryingHandle = NativeCompat.GetVehiclePedIsTryingToEnter(ped.Handle); }
                     catch { tryingHandle = 0; }
@@ -217,11 +184,9 @@ namespace EngineStateManager
                         tt.GhostSuppressUntilTime = now + 2500;
                         if (ModLogger.Enabled)
                             ModLogger.InfoThrottled("ghost_enterkill_" + tt.Handle, $"GhostPilot pre-delete for {tt.Handle} because player is trying to enter it.", 500);
-                        // Skip nearest scan; we already handled the actual target.
                     }
                     else
                     {
-
                         TrackedAircraft nearest = null;
                         float nearestDist = 99999f;
 
@@ -254,17 +219,12 @@ namespace EngineStateManager
                                 ModLogger.InfoThrottled("ghost_enterkill_" + nearest.Handle, $"GhostPilot pre-delete for {nearest.Handle} because player is getting in (dist={nearestDist:0.0})", 500);
                         }
                     }
-
                 }
             }
 
-            // Current player vehicle (if any)
             int currentVehicleHandle = 0;
             Vehicle currentVehicle = null;
 
-            // =========================================================
-            // WHILE SEATED (arming + exit preempt)
-            // =========================================================
             if (ped.IsInVehicle())
             {
                 currentVehicle = ped.CurrentVehicle;
@@ -275,54 +235,101 @@ namespace EngineStateManager
                 {
                     VehicleClass cls = currentVehicle.ClassType;
 
-                    if ((cls == VehicleClass.Planes && !_enablePlanePersistence) ||
-                        (cls == VehicleClass.Helicopters && !_enableHeliPersistence))
-                    {
-                        // gated - do nothing
-                    }
-                    else
+                    if ((cls != VehicleClass.Planes || _enablePlanePersistence) &&
+                        (cls != VehicleClass.Helicopters || _enableHeliPersistence))
                     {
                         TrackedAircraft t = GetOrCreateTracked(currentVehicleHandle, now);
                         t.ClassType = cls;
                         t.LastTouchedTime = now;
                         t.WasPlayerInsideLastUpdate = true;
-
-                        // If back inside, clear post-exit state.
                         t.HasExited = false;
                         t.ExitGraceUntilTime = 0;
                         t.ExitPreemptUntilTime = 0;
 
                         bool engineOnNow = NativeCompat.IsVehicleEngineOn(currentVehicleHandle);
-
-                        bool isPlane = (cls == VehicleClass.Planes);
+                        bool isPlane = cls == VehicleClass.Planes;
+                        bool isHeli = cls == VehicleClass.Helicopters;
                         bool isPropPlane = isPlane && HasPropellerBones(currentVehicle);
-                        if (isPlane) t.IsPropPlane = isPropPlane;
                         bool isJet = isPlane && !isPropPlane;
 
-                        // If engine appears off during enter preempt for jets, gently suppress.
+                        if ((isPlane || isHeli) && ped.SeatIndex == VehicleSeat.Driver)
+                        {
+                            _aircraftRecentPilotVehicleHandle = currentVehicleHandle;
+                            _aircraftRecentPilotGameTime = now;
+                            _aircraftRecentPilotEngineWasOn = engineOnNow;
+                        }
+
+                        bool aircraftRecentPilotMatch =
+                            (isPlane || isHeli) &&
+                            currentVehicleHandle == _aircraftRecentPilotVehicleHandle &&
+                            (now - _aircraftRecentPilotGameTime) <= _aircraftRecentPilotGraceMs;
+
+                        bool aircraftSeatShuffling =
+                            aircraftRecentPilotMatch &&
+                            ped.SeatIndex != VehicleSeat.Driver &&
+                            _aircraftRecentPilotEngineWasOn &&
+                            CanPersistAircraftOnExit(currentVehicleHandle, true);
+
+                        if (aircraftSeatShuffling)
+                        {
+                            int shuffleGrace = Math.Max(
+                                isPlane ? (isPropPlane ? _propExitGraceMs : _jetExitGraceMs) : _heliExitGraceMs,
+                                _aircraftShuffleExitEnforceMs
+                            );
+
+                            t.ExitPreemptUntilTime = Math.Max(t.ExitPreemptUntilTime, now + shuffleGrace);
+                            t.ExitGraceUntilTime = Math.Max(t.ExitGraceUntilTime, now + shuffleGrace);
+
+                            if (!IsAircraftEngineDestroyed(currentVehicleHandle))
+                                NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, true);
+                            else
+                                NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, false);
+
+                            if (isJet)
+                            {
+                                NativeCompat.SetVehicleJetEngineOn(currentVehicleHandle, true);
+                                NativeCompat.SetVehicleEnginePowerMultiplier(currentVehicleHandle, 0.0f);
+                                SafeForceRpmFloor(currentVehicle, t, _jetRpmFloorDuringTransitions);
+                            }
+                            else if (isPropPlane)
+                            {
+                                SafeForceRpmFloor(currentVehicle, t, _propRpmFloorDuringTransitions);
+                            }
+                            else if (isHeli)
+                            {
+                                NativeCompat.SetHeliBladesFullSpeed(currentVehicleHandle);
+                                SafeForceRpmFloor(currentVehicle, t, _heliExitRpmFloor);
+                            }
+
+                            if (!NativeCompat.IsVehicleEngineOn(currentVehicleHandle) && !IsAircraftEngineDestroyed(currentVehicleHandle))
+                                Function.Call(Hash.SET_VEHICLE_ENGINE_ON, currentVehicleHandle, true, true, isPlane ? false : true);
+                        }
+
+                        if (isPlane)
+                            t.IsPropPlane = isPropPlane;
+
                         if (isJet && !engineOnNow && now < t.EnterPreemptUntilTime)
                         {
-                            NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, true);
+                            if (!IsAircraftEngineDestroyed(currentVehicleHandle))
+                                NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, true);
+                            else
+                                NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, false);
+
                             NativeCompat.SetVehicleJetEngineOn(currentVehicleHandle, true);
                             NativeCompat.SetVehicleEnginePowerMultiplier(currentVehicleHandle, 0.0f);
 
-                            // Only hard-toggle if truly off
-                            if (!NativeCompat.IsVehicleEngineOn(currentVehicleHandle))
+                            if (!NativeCompat.IsVehicleEngineOn(currentVehicleHandle) && !IsAircraftEngineDestroyed(currentVehicleHandle))
                                 Function.Call(Hash.SET_VEHICLE_ENGINE_ON, currentVehicleHandle, true, true, false);
 
                             SafeForceRpmFloor(currentVehicle, t, _jetRpmFloorDuringTransitions);
 
                             if (ModLogger.Enabled)
                                 ModLogger.InfoThrottled("entrydip_" + currentVehicleHandle, $"Entry dip suppressed for {currentVehicleHandle} (Jets).", 1000);
-
-                            // Do NOT arm persistence from this transient; only arm when we see engine ON normally.
                         }
                         else if (!engineOnNow)
                         {
-                            // Cold while seated: sacred. Never arm, clear sticky state.
                             t.EngineWasOnWhileSeated = false;
                             t.ArmedForPersistence = false;
-
                             t.HasExited = false;
                             t.ExitGraceUntilTime = 0;
                             t.ExitPreemptUntilTime = 0;
@@ -330,34 +337,42 @@ namespace EngineStateManager
                             t.NextReassertTime = 0;
 
                             NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, false);
-                            if (isJet) NativeCompat.SetVehicleJetEngineOn(currentVehicleHandle, false);
+                            if (isJet)
+                                NativeCompat.SetVehicleJetEngineOn(currentVehicleHandle, false);
                         }
                         else
                         {
-                            // Engine ON while seated => arm persistence.
                             t.EngineWasOnWhileSeated = true;
                             t.ArmedForPersistence = true;
 
-                            NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, true);
-                            if (isJet) NativeCompat.SetVehicleJetEngineOn(currentVehicleHandle, true);
+                            if (!IsAircraftEngineDestroyed(currentVehicleHandle))
+                                NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, true);
+                            else
+                                NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, false);
 
-                            // Sample last-known RPM while seated for smoothing.
+                            if (isJet)
+                                NativeCompat.SetVehicleJetEngineOn(currentVehicleHandle, true);
+
                             t.LastKnownRpm = SafeGetRpm(currentVehicle, t.LastKnownRpm);
 
-                            // EXIT PREEMPT (Planes only, driver seat)
-                            if (isPlane && ped.SeatIndex == VehicleSeat.Driver)
+                            if ((isPlane || isHeli) && ped.SeatIndex == VehicleSeat.Driver)
                             {
                                 bool exitPressed = Game.IsControlPressed(Control.VehicleExit);
                                 bool pedGettingOut = NativeCompat.IsPedGettingOutOfVehicle(ped.Handle);
 
                                 if (exitPressed || pedGettingOut)
                                 {
-                                    int exitGrace = isPropPlane ? _propExitGraceMs : _jetExitGraceMs;
+                                    int exitGrace = isPlane
+                                        ? (isPropPlane ? _propExitGraceMs : _jetExitGraceMs)
+                                        : _heliExitGraceMs;
 
                                     t.ExitPreemptUntilTime = Math.Max(t.ExitPreemptUntilTime, now + exitGrace);
                                     t.ExitGraceUntilTime = Math.Max(t.ExitGraceUntilTime, now + exitGrace);
 
-                                    NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, true);
+                                    if (!IsAircraftEngineDestroyed(currentVehicleHandle))
+                                        NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, true);
+                                    else
+                                        NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(currentVehicleHandle, false);
 
                                     if (isJet)
                                     {
@@ -365,18 +380,23 @@ namespace EngineStateManager
                                         NativeCompat.SetVehicleEnginePowerMultiplier(currentVehicleHandle, 0.0f);
                                         SafeForceRpmFloor(currentVehicle, t, _jetRpmFloorDuringTransitions);
                                     }
-                                    else
+                                    else if (isPropPlane)
                                     {
                                         SafeForceRpmFloor(currentVehicle, t, _propRpmFloorDuringTransitions);
                                     }
+                                    else if (isHeli)
+                                    {
+                                        NativeCompat.SetHeliBladesFullSpeed(currentVehicleHandle);
+                                        SafeForceRpmFloor(currentVehicle, t, _heliExitRpmFloor);
+                                    }
 
-                                    if (!NativeCompat.IsVehicleEngineOn(currentVehicleHandle))
-                                        Function.Call(Hash.SET_VEHICLE_ENGINE_ON, currentVehicleHandle, true, true, false);
+                                    if (!NativeCompat.IsVehicleEngineOn(currentVehicleHandle) && !IsAircraftEngineDestroyed(currentVehicleHandle))
+                                        Function.Call(Hash.SET_VEHICLE_ENGINE_ON, currentVehicleHandle, true, true, isPlane ? false : true);
 
                                     if (ModLogger.Enabled)
                                         ModLogger.InfoThrottled(
                                             "exitpre_" + currentVehicleHandle,
-                                            $"ExitPreempt armed for {currentVehicleHandle} ({(isJet ? "Jets" : "Props")}). Until={t.ExitPreemptUntilTime}",
+                                            $"ExitPreempt armed for {currentVehicleHandle} ({(isJet ? "Jets" : isPropPlane ? "Props" : "Helis")}). Until={t.ExitPreemptUntilTime}",
                                             500
                                         );
                                 }
@@ -386,11 +406,9 @@ namespace EngineStateManager
                 }
             }
 
-            // =========================================================
-            // ENFORCEMENT LOOP (tracked aircraft)
-            // =========================================================
             _keyBuffer.Clear();
-            foreach (var kv in _tracked) _keyBuffer.Add(kv.Key);
+            foreach (var kv in _tracked)
+                _keyBuffer.Add(kv.Key);
 
             for (int i = 0; i < _keyBuffer.Count; i++)
             {
@@ -415,15 +433,19 @@ namespace EngineStateManager
                 }
 
                 VehicleClass cls = v.ClassType;
-                bool isPlane = (cls == VehicleClass.Planes);
-                bool isHeli = (cls == VehicleClass.Helicopters);
-
+                bool isPlane = cls == VehicleClass.Planes;
+                bool isHeli = cls == VehicleClass.Helicopters;
                 bool isPropPlane = isPlane && (t.IsPropPlane || HasPropellerBones(v));
-                if (isPlane) t.IsPropPlane = isPropPlane;
                 bool isJet = isPlane && !isPropPlane;
 
-                if (isPlane && !_enablePlanePersistence) continue;
-                if (isHeli && !_enableHeliPersistence) continue;
+                if (isPlane)
+                    t.IsPropPlane = isPropPlane;
+
+                if (isPlane && !_enablePlanePersistence)
+                    continue;
+
+                if (isHeli && !_enableHeliPersistence)
+                    continue;
 
                 if (_maxDistanceToTrack > 0f)
                 {
@@ -436,14 +458,13 @@ namespace EngineStateManager
                     }
                 }
 
-                bool isInsideThisAircraftNow = (currentVehicleHandle != 0 && currentVehicleHandle == handle);
-
-                bool inEnterPreempt = isPlane && (now < t.EnterPreemptUntilTime);
-                bool inPreExitGrace = isPlane && (now < t.ExitPreemptUntilTime);
-                bool inPostExitGrace = isPlane && (now < t.ExitGraceUntilTime);
+                bool isInsideThisAircraftNow = currentVehicleHandle != 0 && currentVehicleHandle == handle;
+                bool inEnterPreempt = isPlane && now < t.EnterPreemptUntilTime;
+                bool inPreExitGrace = (isPlane || isHeli) && now < t.ExitPreemptUntilTime;
+                bool inPostExitGrace = (isPlane || isHeli) && now < t.ExitGraceUntilTime;
+                bool aircraftEngineDestroyed = (isPlane || isHeli) && IsAircraftEngineDestroyed(handle);
                 bool inAnyGrace = inEnterPreempt || inPreExitGrace || inPostExitGrace;
 
-                // Exit detection: only persist if armed.
                 if (t.WasPlayerInsideLastUpdate && !isInsideThisAircraftNow)
                 {
                     if (t.ArmedForPersistence)
@@ -452,12 +473,14 @@ namespace EngineStateManager
                         t.NextReassertTime = 0;
                         t.ExitDetectedTime = now;
 
-                        // Ensure grace window is set correctly based on plane type
+                        int exitGrace = 0;
                         if (isPlane)
-                        {
-                            int exitGrace = isPropPlane ? _propExitGraceMs : _jetExitGraceMs;
+                            exitGrace = isPropPlane ? _propExitGraceMs : _jetExitGraceMs;
+                        else if (isHeli)
+                            exitGrace = _heliExitGraceMs;
+
+                        if (exitGrace > 0)
                             t.ExitGraceUntilTime = Math.Max(t.ExitGraceUntilTime, now + exitGrace);
-                        }
 
                         if (isPropPlane)
                             EnsureGhostPilot(v, t, now);
@@ -467,14 +490,14 @@ namespace EngineStateManager
                     }
                     else
                     {
-                        // Cold exit: clear enforcement, clear sticky flags.
                         t.HasExited = false;
                         t.ExitGraceUntilTime = 0;
                         t.ExitPreemptUntilTime = 0;
                         t.EnterPreemptUntilTime = 0;
 
                         NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(handle, false);
-                        if (isJet) NativeCompat.SetVehicleJetEngineOn(handle, false);
+                        if (isJet)
+                            NativeCompat.SetVehicleJetEngineOn(handle, false);
 
                         CleanupGhostPilot(t, "ColdExit");
                         if (ModLogger.Enabled)
@@ -484,53 +507,50 @@ namespace EngineStateManager
 
                 t.WasPlayerInsideLastUpdate = isInsideThisAircraftNow;
 
-                // If the player is inside this aircraft, we never want a ghost pilot occupying a seat.
                 if (isInsideThisAircraftNow && t.GhostPilotPedHandle != 0)
                     CleanupGhostPilot(t, "PlayerInside");
 
-                // If inside and not in any grace window, do not enforce.
                 if (isInsideThisAircraftNow && !inAnyGrace)
-                {
                     continue;
-                }
-                // If not in grace and not post-exit armed, do nothing.
+
                 if (!inAnyGrace && !t.HasExited)
                     continue;
 
-                // Prop planes: keep an invisible driver seated to prevent Rockstar empty-seat prop stall.
                 if (isPropPlane && t.HasExited)
                     EnsureGhostPilot(v, t, now);
 
-                // Rate limiting outside grace
                 if (!inAnyGrace && now < t.NextReassertTime)
                     continue;
 
-                // Maintain keep-engine-on flag during grace / post-exit
-                NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(handle, true);
-                if (isJet) NativeCompat.SetVehicleJetEngineOn(handle, true);
+                NativeCompat.SetVehicleKeepEngineOnWhenAbandoned(handle, !aircraftEngineDestroyed);
+                if (isJet)
+                    NativeCompat.SetVehicleJetEngineOn(handle, !aircraftEngineDestroyed);
 
                 bool engineIsOn = NativeCompat.IsVehicleEngineOn(handle);
-
                 bool shouldReassertEngine =
                     !_onlyReassertWhenEngineOff || !engineIsOn || (isPropPlane && inPostExitGrace && t.HasExited);
 
-                if (shouldReassertEngine)
+                if (shouldReassertEngine && !aircraftEngineDestroyed)
                 {
-                    // For planes, disableAutoStart MUST be false so we don't accidentally start cold planes
                     Function.Call(Hash.SET_VEHICLE_ENGINE_ON, handle, true, true, isPlane ? false : true);
                     Function.Call(Hash.SET_VEHICLE_UNDRIVEABLE, handle, false);
                 }
 
-                // Prop-plane post-exit: try to keep some RPM floor during grace (Rockstar may still stall)
-                if (isPropPlane && inPostExitGrace && t.HasExited)
-                {
+                if (isPropPlane && inPostExitGrace && t.HasExited && !aircraftEngineDestroyed)
                     SafeForceRpmFloor(v, t, _propRpmFloorDuringTransitions);
+
+                if (isHeli && inPreExitGrace && !aircraftEngineDestroyed)
+                    NativeCompat.SetHeliBladesFullSpeed(handle);
+
+                if (isHeli && inPostExitGrace && t.HasExited && !aircraftEngineDestroyed)
+                {
+                    NativeCompat.SetHeliBladesFullSpeed(handle);
+                    SafeForceRpmFloor(v, t, _heliExitRpmFloor);
                 }
 
-                // Jet post-exit shaping: first 250ms hold floor; afterwards idle clamp
-                if (isJet && inPostExitGrace && !isInsideThisAircraftNow)
+                if (isJet && inPostExitGrace && !isInsideThisAircraftNow && !aircraftEngineDestroyed)
                 {
-                    int sinceExit = (t.ExitDetectedTime > 0) ? (now - t.ExitDetectedTime) : 9999;
+                    int sinceExit = t.ExitDetectedTime > 0 ? (now - t.ExitDetectedTime) : 9999;
 
                     if (sinceExit < 250)
                         SafeForceRpmFloor(v, t, _jetRpmFloorDuringTransitions);
@@ -538,7 +558,7 @@ namespace EngineStateManager
                         TrySetIdleRpm(v, _jetIdleRpm);
                 }
 
-                if (_forceHeliBladesFullSpeedAfterExit && isHeli && t.HasExited)
+                if (_forceHeliBladesFullSpeedAfterExit && isHeli && t.HasExited && !aircraftEngineDestroyed)
                     NativeCompat.SetHeliBladesFullSpeed(handle);
 
                 if (ModLogger.Enabled && (inAnyGrace || !engineIsOn))
@@ -550,14 +570,10 @@ namespace EngineStateManager
                     );
                 }
 
-                // Scheduling: every frame during grace, otherwise interval-based
-                int perAircraftMs = isPlane ? Math.Min(_reassertPerAircraftMs, 150) : _reassertPerAircraftMs;
+                int perAircraftMs = (isPlane || isHeli) ? Math.Min(_reassertPerAircraftMs, 150) : _reassertPerAircraftMs;
                 t.NextReassertTime = inAnyGrace ? now : (now + perAircraftMs);
             }
 
-            // =========================================================
-            // MAINTENANCE / PRUNING
-            // =========================================================
             if (now >= _nextMaintenanceTime)
             {
                 _nextMaintenanceTime = now + Math.Max(50, _maintenanceIntervalMs);
@@ -567,12 +583,6 @@ namespace EngineStateManager
             }
         }
 
-
-        // =========================================================
-        // Prop-plane 'ghost pilot' workaround
-        // =========================================================
-
-        // Ped model to use for the ghost pilot. Using PedHash enum avoids GetHashKey and is stable in SHVDN.
         private const PedHash GHOST_PILOT_MODEL = PedHash.Pilot01SMY;
 
         private void EnsureGhostPilot(Vehicle plane, TrackedAircraft t, int now)
@@ -580,17 +590,13 @@ namespace EngineStateManager
             if (plane == null || !plane.Exists())
                 return;
 
-            // Only for armed prop planes after an exit.
             if (!t.ArmedForPersistence || !t.HasExited || !t.IsPropPlane)
                 return;
 
             int veh = plane.Handle;
-
-            // Don't spawn/respawn while we are suppressing during enter attempts.
             if (now < t.GhostSuppressUntilTime)
                 return;
 
-            // If player is back inside, never keep the ghost around.
             Ped player = Game.Player?.Character;
 
             if (player != null && player.Exists() && !player.IsInVehicle() && NativeCompat.IsPedGettingIntoAnyVehicle(player.Handle))
@@ -605,6 +611,7 @@ namespace EngineStateManager
                     t.GhostSuppressUntilTime = now + 2500;
                     return;
                 }
+
                 float dist = player.Position.DistanceTo(plane.Position);
                 if (dist < 10.0f)
                 {
@@ -620,7 +627,6 @@ namespace EngineStateManager
                 return;
             }
 
-            // If ghost exists and is seated as driver, we're done.
             if (t.GhostPilotPedHandle != 0 && NativeCompat.DoesEntityExist(t.GhostPilotPedHandle))
             {
                 int seated = NativeCompat.GetPedInVehicleSeat(veh, -1);
@@ -630,12 +636,9 @@ namespace EngineStateManager
                     return;
                 }
 
-
-                // Ped exists but isn't in seat: remove and recreate (rare ejection cases).
                 CleanupGhostPilot(t, "GhostNotSeated");
             }
 
-            // Request model (non-blocking). We'll spawn as soon as it's loaded.
             uint model = (uint)GHOST_PILOT_MODEL;
             if (!NativeCompat.HasModelLoaded(model))
             {
@@ -647,7 +650,6 @@ namespace EngineStateManager
             if (ghostPed == 0 || !NativeCompat.DoesEntityExist(ghostPed))
                 return;
 
-            // Immediately make the ped inert and invisible.
             NativeCompat.SetEntityVisible(ghostPed, false);
             NativeCompat.SetEntityAlpha(ghostPed, 0);
             NativeCompat.SetBlockingOfNonTemporaryEvents(ghostPed, true);
@@ -660,7 +662,6 @@ namespace EngineStateManager
             t.GhostPilotPedHandle = ghostPed;
             t.GhostPilotActive = true;
 
-            // Optional: free model memory once spawned.
             NativeCompat.SetModelAsNoLongerNeeded(model);
 
             if (ModLogger.Enabled)
@@ -673,11 +674,8 @@ namespace EngineStateManager
                 return;
 
             int pedHandle = t.GhostPilotPedHandle;
-
             if (pedHandle != 0 && NativeCompat.DoesEntityExist(pedHandle))
-            {
                 NativeCompat.DeletePed(pedHandle);
-            }
 
             t.GhostPilotPedHandle = 0;
             t.GhostPilotActive = false;
@@ -686,13 +684,56 @@ namespace EngineStateManager
                 ModLogger.InfoThrottled("ghost_cleanup_" + (t.Handle != 0 ? t.Handle : 0), $"Ghost pilot cleanup. Reason={reason}", 2000);
         }
 
-        // =========================================================
-        // Helpers
-        // =========================================================
+        private bool IsAircraftEngineDestroyed(int vehHandle)
+        {
+            try
+            {
+                if (vehHandle == 0 || !NativeCompat.DoesEntityExist(vehHandle))
+                    return true;
+
+                Vehicle v = Entity.FromHandle(vehHandle) as Vehicle;
+                if (v == null || !v.Exists())
+                    return true;
+
+                if (!(v.Model.IsPlane || v.Model.IsHelicopter))
+                    return false;
+
+                float engineHealth = Function.Call<float>(Hash.GET_VEHICLE_ENGINE_HEALTH, vehHandle);
+                bool driveable = Function.Call<bool>(Hash.IS_VEHICLE_DRIVEABLE, vehHandle, false);
+
+                if (engineHealth <= _destroyedEngineHealthThreshold)
+                    return true;
+
+                if (!driveable && engineHealth <= 0.0f)
+                    return true;
+
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool CanPersistAircraftOnExit(int vehHandle, bool engineWasOnSnapshot)
+        {
+            if (vehHandle == 0 || !NativeCompat.DoesEntityExist(vehHandle))
+                return false;
+
+            if (IsAircraftEngineDestroyed(vehHandle))
+                return false;
+
+            if (engineWasOnSnapshot)
+                return true;
+
+            return NativeCompat.IsVehicleEngineOn(vehHandle);
+        }
 
         private static bool IsSupportedAircraft(Vehicle v)
         {
-            if (v == null || !v.Exists()) return false;
+            if (v == null || !v.Exists())
+                return false;
+
             VehicleClass c = v.ClassType;
             return c == VehicleClass.Planes || c == VehicleClass.Helicopters;
         }
@@ -703,13 +744,12 @@ namespace EngineStateManager
                 return false;
 
             int h = v.Handle;
-
             string[] bones =
             {
-                "prop_1","prop_2","prop_3","prop_4",
-                "prop","propeller","propeller1","propeller2",
-                "prop_left","prop_right","prop_l","prop_r",
-                "prop0","prop1","prop2","prop3","prop4"
+                "prop_1", "prop_2", "prop_3", "prop_4",
+                "prop", "propeller", "propeller1", "propeller2",
+                "prop_left", "prop_right", "prop_l", "prop_r",
+                "prop0", "prop1", "prop2", "prop3", "prop4"
             };
 
             for (int i = 0; i < bones.Length; i++)
@@ -755,7 +795,8 @@ namespace EngineStateManager
 
             if (target > current + 0.001f)
             {
-                try { v.CurrentRPM = target; } catch { }
+                try { v.CurrentRPM = target; }
+                catch { }
             }
 
             if (target > t.LastKnownRpm)
@@ -770,7 +811,8 @@ namespace EngineStateManager
             if (rpm < 0f) rpm = 0f;
             if (rpm > 1f) rpm = 1f;
 
-            try { v.CurrentRPM = rpm; } catch { }
+            try { v.CurrentRPM = rpm; }
+            catch { }
         }
 
         private TrackedAircraft GetOrCreateTracked(int handle, int now)
@@ -782,19 +824,15 @@ namespace EngineStateManager
             {
                 Handle = handle,
                 ClassType = VehicleClass.Compacts,
-
                 ArmedForPersistence = false,
                 EngineWasOnWhileSeated = false,
-
                 HasExited = false,
                 WasPlayerInsideLastUpdate = false,
-
                 NextReassertTime = 0,
                 ExitGraceUntilTime = 0,
                 ExitPreemptUntilTime = 0,
                 EnterPreemptUntilTime = 0,
                 ExitDetectedTime = 0,
-
                 LastKnownRpm = 0.0f,
                 LastTouchedTime = now
             };
@@ -826,54 +864,22 @@ namespace EngineStateManager
             }
         }
 
-        // Clears all tracked aircraft and cleans up any active ghost pilots.
-        // Safe to call at any time (e.g., when persistence is disabled via INI).
-        private void ClearAllTrackedAircraft(string reason)
+        private void LoadConfig()
         {
-            try
-            {
-                if (_tracked.Count == 0)
-                    return;
-
-                // Cleanup ghost pilots first.
-                foreach (var kv in _tracked)
-                {
-                    TrackedAircraft t = kv.Value;
-                    try { CleanupGhostPilot(t, "CLEAR_ALL:" + reason); } catch { }
-                }
-
-                _tracked.Clear();
-
-                if (ModLogger.Enabled)
-                    ModLogger.Info($"Cleared all tracked aircraft. Reason={reason}");
-            }
-            catch
-            {
-                // never throw from maintenance
-            }
-        }
-
-        private void LoadIniAbsolute(string iniAbsPath)
-        {
-            // Centralized INI load (Main.cs)
             _maxTrackedAircraft = Clamp(MainConfig.MaxTrackedAircraft, 1, 200);
             _maintenanceIntervalMs = Clamp(MainConfig.UpdateIntervalMs, 50, 5000);
             _reassertPerAircraftMs = Clamp(MainConfig.ReassertPerAircraftMs, 50, 10000);
-
             _maxDistanceToTrack = MainConfig.MaxDistanceToTrack;
             _onlyReassertWhenEngineOff = MainConfig.OnlyReassertWhenEngineOff;
             _forceHeliBladesFullSpeedAfterExit = MainConfig.ForceHeliBladesFullSpeedAfterExit;
-
             _enableHeliPersistence = MainConfig.EnableHeliPersistence;
             _enablePlanePersistence = MainConfig.EnablePlanePersistence;
-
             _jetExitGraceMs = Clamp(MainConfig.JetExitGraceMs, 0, 5000);
             _jetEnterGraceMs = Clamp(MainConfig.JetEnterGraceMs, 0, 5000);
-
             _propExitGraceMs = Clamp(MainConfig.PropExitGraceMs, 0, 8000);
             _propEnterGraceMs = Clamp(MainConfig.PropEnterGraceMs, 0, 8000);
-
             _jetIdleRpm = MainConfig.JetIdleRpm;
+
             if (_jetIdleRpm < 0f) _jetIdleRpm = 0f;
             if (_jetIdleRpm > 1f) _jetIdleRpm = 1f;
 
@@ -900,30 +906,12 @@ namespace EngineStateManager
             return Path.Combine(baseDir, "scripts");
         }
 
-        private string FindIniPath()
-        {
-            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-
-            string p1 = Path.Combine(baseDir, "scripts", "EngineStateManager.ini");
-            if (File.Exists(p1)) return p1;
-
-            string p2 = Path.Combine("scripts", "EngineStateManager.ini");
-            if (File.Exists(p2)) return p2;
-
-            string p3 = Path.Combine(baseDir, "EngineStateManager.ini");
-            if (File.Exists(p3)) return p3;
-
-            return p1; // default expected location
-        }
-
         private void OnAborted(object sender, EventArgs e)
         {
             try
             {
                 foreach (var kv in _tracked)
-                {
                     CleanupGhostPilot(kv.Value, "ScriptAbort");
-                }
             }
             catch { }
 
