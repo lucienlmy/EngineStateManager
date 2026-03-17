@@ -34,23 +34,9 @@ Changes only apply on next script reload.
 #### **-** [Latest ScriptHookV](https://www.dev-c.com/gtav/scripthookv/)
 #### **-** Latest **ScriptHookVDotNet v3** for [**Enhanced**](https://www.gta5-mods.com/tools/script-hook-v-net-enhanced) or [**Legacy**](https://www.gta5-mods.com/tools/scripthookv-net)
 
-### **[ Planned Upcoming Features ]**
-#### **-** _Separate aircraft logic modes_
-#### **-** _Advanced idle RPM control_
-#### **-** _Additional realism options_
-#### **-** _Configurable engine options that are only present in online_
+
 
 ### [ Development Notes ]
-This mod was built with a strong focus on:
-
-Native-level compatibility
-
-Realism-oriented behavior
-
-Modular, configurable design
-
-Stability across GTA updates
-
 All logic, persistence systems, and engine handling were custom-developed specifically for EngineStateManager.
 
 
