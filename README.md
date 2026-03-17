@@ -55,5 +55,3 @@ All logic, persistence systems, and engine handling were custom-developed specif
   [**GTA5-Mods**](https://www.gta5-mods.com/tools/script-hook-v-net-enhanced)
   
   [NexusMods Enhanced Page](https://www.nexusmods.com/gta5enhanced/mods/443)
-  
-  [NexusMods Legacy Page](https://www.nexusmods.com/gta5/mods/1656)
