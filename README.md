@@ -9,19 +9,22 @@ Aircraft, helicopters, and ground vehicles are all supported.
 Every feature is modular and fully configurable via INI.
 
 ## **[ FEATURES ]**
-#### **-** Prevents engines from shutting off when exiting vehicles
-#### **-** Blocks GTA V’s automatic engine startup that works across all supported vehicle classes
-#### **-** Eliminates RPM/audio dips during enter/exit animations
-#### **-** Toggle vehicle engines on/off via hotkey that optionally includes animations
-#### **-** Does not interfere with GTA’s default controls unless enabled
-#### **-** Includes native fail-safe handling 
-#### **-** Optional in-game notification when the mod loads
+#### **-** Manual engine start and shutdown control
+#### **-** Persistent engine state handling for improved consistency
+#### **-** Prevents engine shutoff when exiting vehicles
+#### **-** Passenger seat exit no longer turns the engine off when it should remain running
+#### **-** Improved engine persistence during seat shuffling
+#### **-** Better handling of engine state when entering, exiting, and switching seats
+#### **-** More reliable behavior across standard vehicles
+#### **-** Improved support for planes and helicopters
+#### **-** Reduced engine flicker and unwanted restart behavior
 #### **-** Tracks vehicle engine state per entity
-#### **-** Troubleshooting debug logging (if enabled)
-#### **-** Designed for future GTA updates
 #### **-** Disable aircraft stalling when the aircraft is flying too slow (if enabled)
 #### **-** Disable aircraft stalling if the aircraft is damaged. (if enabled)
-#### **-** Controller Support
+#### **-** Keybind & Controller Support
+#### **-** In-game notification when the mod loads
+#### **-** Troubleshooting debug logging
+#### **-** Includes Fail-safe handling to prevent crashes
 
 ### **[ Configuration Options ]**
 All features are configurable via: **EngineStateManager.ini**
