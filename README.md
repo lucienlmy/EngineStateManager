@@ -34,12 +34,6 @@ Changes only apply on next script reload.
 #### **-** [Latest ScriptHookV](https://www.dev-c.com/gtav/scripthookv/)
 #### **-** Latest **ScriptHookVDotNet v3** for [**Enhanced**](https://www.gta5-mods.com/tools/script-hook-v-net-enhanced) or [**Legacy**](https://www.gta5-mods.com/tools/scripthookv-net)
 
-### [ Known Issues ]
-- **Jet planes don't idle at they're idle speed when exiting them.**
-- **Natively prop planes are impossible to keep running when exiting them (unless a prop plane rotor hash exists but has been hidden by rockstar), so I've decided to do a temporary work around by spawning an
-invisible ped in the prop plane the player was last in to keep the engine idling.**
-#### **If you encounter any other issues, please include your EngineStateManager.log when reporting.**
-
 ### **[ Planned Upcoming Features ]**
 #### **-** _Separate aircraft logic modes_
 #### **-** _Advanced idle RPM control_
