@@ -14,6 +14,7 @@
 using GTA;
 using GTA.Native;
 using System;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using GTAControl = GTA.Control;
 using EngineStateManager;
@@ -35,6 +36,7 @@ public sealed class EngineStateControl : Script
     private const int AircraftBusRefreshMs = 250;
     private const int InputHealthCheckIntervalMs = 1000;
     private const int TickExceptionLogCooldownMs = 1000;
+    private const int StaleOnscreenKeyboardBlockTimeoutMs = 15000;
 
     private static bool _enabled = true;
     private static int _toggleVk = 0x5A;
@@ -54,6 +56,8 @@ public sealed class EngineStateControl : Script
     private bool _controllerWasDown;
     private bool _uiWasBlocking;
     private bool _queuedKeyboardToggle;
+    private int _onscreenKeyboardBlockStartedAtGameTime = -1;
+    private bool _staleOnscreenKeyboardStateIgnored;
 
     private int _lastToggleGameTime;
     private int _nextConfigRefreshGameTime;
@@ -71,6 +75,9 @@ public sealed class EngineStateControl : Script
 
         LogInfo($"EngineStateControl loaded. Enabled={_enabled} KeyVK=0x{_toggleVk:X2} ({_toggleKey}) ControllerEnabled={_controllerEnabled} ControllerMain={_controllerMain}");
     }
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
 
     private static void RefreshBindingsFromConfig()
     {
@@ -188,6 +195,12 @@ public sealed class EngineStateControl : Script
         _queuedKeyboardToggle = false;
     }
 
+    private void ResetOnscreenKeyboardBlockTracking()
+    {
+        _onscreenKeyboardBlockStartedAtGameTime = -1;
+        _staleOnscreenKeyboardStateIgnored = false;
+    }
+
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
         try
@@ -223,8 +236,8 @@ public sealed class EngineStateControl : Script
             return;
         }
 
-        bool keyboardDown = Game.IsKeyPressed(_toggleKey);
-        bool controllerDown = _controllerEnabled && Game.IsControlPressed(_controllerMain);
+        bool keyboardDown = IsKeyboardToggleCurrentlyDown();
+        bool controllerDown = IsControllerToggleCurrentlyDown();
 
         if (!keyboardDown)
         {
@@ -246,8 +259,8 @@ public sealed class EngineStateControl : Script
             return false;
         }
 
-        bool keyboardDown = Game.IsKeyPressed(_toggleKey);
-        bool controllerDown = _controllerEnabled && Game.IsControlPressed(_controllerMain);
+        bool keyboardDown = IsKeyboardToggleCurrentlyDown();
+        bool controllerDown = IsControllerToggleCurrentlyDown();
         bool queuedKeyboardToggle = _queuedKeyboardToggle;
         _queuedKeyboardToggle = false;
 
@@ -383,7 +396,7 @@ public sealed class EngineStateControl : Script
             if (HasNativeRestartIntent())
             {
                 ClearOverride("Aircraft restart intent.");
-                Function.Call(Hash.SET_VEHICLE_ENGINE_ON, currentVehicle.Handle, true, false, true);
+                NativeCompat.SetVehicleEngineOn(currentVehicle.Handle, true, false, true);
                 return;
             }
 
@@ -406,7 +419,7 @@ public sealed class EngineStateControl : Script
 
         if (HasNativeRestartIntent())
         {
-            Function.Call(Hash.SET_VEHICLE_ENGINE_ON, currentVehicle.Handle, true, false, true);
+            NativeCompat.SetVehicleEngineOn(currentVehicle.Handle, true, false, true);
         }
     }
 
@@ -419,11 +432,11 @@ public sealed class EngineStateControl : Script
 
         if (state == EngineOverrideState.ForceOn)
         {
-            Function.Call(Hash.SET_VEHICLE_ENGINE_ON, vehicle.Handle, true, false, true);
+            NativeCompat.SetVehicleEngineOn(vehicle.Handle, true, false, true);
         }
         else if (state == EngineOverrideState.ForceOff)
         {
-            Function.Call(Hash.SET_VEHICLE_ENGINE_ON, vehicle.Handle, false, true, true);
+            NativeCompat.SetVehicleEngineOn(vehicle.Handle, false, true, true);
         }
     }
 
@@ -450,7 +463,7 @@ public sealed class EngineStateControl : Script
 
     private static bool IsEngineRunning(Vehicle vehicle)
     {
-        return vehicle != null && vehicle.Exists() && Function.Call<bool>(Hash.GET_IS_VEHICLE_ENGINE_RUNNING, vehicle.Handle);
+        return vehicle != null && vehicle.Exists() && NativeCompat.IsVehicleEngineOn(vehicle.Handle);
     }
 
     private static bool IsAircraft(Vehicle vehicle)
@@ -481,25 +494,157 @@ public sealed class EngineStateControl : Script
         }
     }
 
-    private static bool IsBlockedByUI()
+    private bool IsBlockedByUI()
     {
         if (Game.IsPaused)
         {
+            ResetOnscreenKeyboardBlockTracking();
             return true;
         }
 
-        if (Function.Call<bool>(Hash.IS_PAUSE_MENU_ACTIVE))
+        bool pauseMenuActive;
+        try
+        {
+            pauseMenuActive = Function.Call<bool>(Hash.IS_PAUSE_MENU_ACTIVE);
+        }
+        catch
+        {
+            pauseMenuActive = false;
+        }
+
+        if (pauseMenuActive)
+        {
+            ResetOnscreenKeyboardBlockTracking();
+            return true;
+        }
+
+        int keyboardState;
+        try
+        {
+            keyboardState = Function.Call<int>(Hash.UPDATE_ONSCREEN_KEYBOARD);
+        }
+        catch
+        {
+            ResetOnscreenKeyboardBlockTracking();
+            return false;
+        }
+
+        bool blockingState = keyboardState == 0 || keyboardState == 1;
+        if (!blockingState)
+        {
+            ResetOnscreenKeyboardBlockTracking();
+            return false;
+        }
+
+        int now = Game.GameTime;
+        if (_onscreenKeyboardBlockStartedAtGameTime < 0)
+        {
+            _onscreenKeyboardBlockStartedAtGameTime = now;
+            _staleOnscreenKeyboardStateIgnored = false;
+            return true;
+        }
+
+        if ((now - _onscreenKeyboardBlockStartedAtGameTime) < StaleOnscreenKeyboardBlockTimeoutMs)
         {
             return true;
         }
 
-        int keyboardState = Function.Call<int>(Hash.UPDATE_ONSCREEN_KEYBOARD);
-        return keyboardState == 0 || keyboardState == 1;
+        if (!_staleOnscreenKeyboardStateIgnored)
+        {
+            _staleOnscreenKeyboardStateIgnored = true;
+            LogInfo("Ignoring stale onscreen keyboard state so engine toggle input cannot get stuck blocked.");
+        }
+
+        return false;
+    }
+
+    private static bool IsKeyboardToggleCurrentlyDown()
+    {
+        bool shvdnDown = false;
+
+        try
+        {
+            shvdnDown = Game.IsKeyPressed(_toggleKey);
+        }
+        catch
+        {
+        }
+
+        if (shvdnDown)
+        {
+            return true;
+        }
+
+        if (_toggleVk <= 0 || _toggleVk > 0xFF)
+        {
+            return false;
+        }
+
+        try
+        {
+            return (GetAsyncKeyState(_toggleVk) & 0x8000) != 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsControllerToggleCurrentlyDown()
+    {
+        if (!_controllerEnabled)
+        {
+            return false;
+        }
+
+        try
+        {
+            if (Game.IsControlPressed(_controllerMain))
+            {
+                return true;
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            return
+                Function.Call<bool>(Hash.IS_DISABLED_CONTROL_PRESSED, 0, (int)_controllerMain) ||
+                Function.Call<bool>(Hash.IS_DISABLED_CONTROL_PRESSED, 2, (int)_controllerMain);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool HasNativeRestartIntent()
     {
-        return Game.IsControlPressed(GTA.Control.VehicleAccelerate) || Game.IsControlPressed(GTA.Control.VehicleBrake);
+        try
+        {
+            if (Game.IsControlPressed(GTA.Control.VehicleAccelerate) || Game.IsControlPressed(GTA.Control.VehicleBrake))
+            {
+                return true;
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            return
+                Function.Call<bool>(Hash.IS_DISABLED_CONTROL_PRESSED, 0, (int)GTA.Control.VehicleAccelerate) ||
+                Function.Call<bool>(Hash.IS_DISABLED_CONTROL_PRESSED, 0, (int)GTA.Control.VehicleBrake) ||
+                Function.Call<bool>(Hash.IS_DISABLED_CONTROL_PRESSED, 2, (int)GTA.Control.VehicleAccelerate) ||
+                Function.Call<bool>(Hash.IS_DISABLED_CONTROL_PRESSED, 2, (int)GTA.Control.VehicleBrake);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static void LogInfo(string message)
